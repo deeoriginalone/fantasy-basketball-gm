@@ -1,0 +1,11 @@
+cryptography>=43,<46
+fastapi>=0.115,<1
+httpx>=0.27,<1
+nba_api>=1.5,<2
+itsdangerous>=2.2,<3
+asyncpg>=0.30,<1
+pydantic-settings>=2.6,<3
+pytest>=8,<9
+sqlalchemy[asyncio]>=2.0,<3
+tenacity>=9,<10
+uvicorn[standard]>=0.32,<1
