@@ -31,3 +31,10 @@ First successful Yahoo Fantasy Basketball integration completed.
 - The Yahoo callback must exactly match the registered callback and `YAHOO_REDIRECT_URI`.
 - The API is unauthenticated beyond Yahoo's integration and must remain on a trusted network. Caddy provides HTTPS at the configured LAN endpoint.
 - Schema bootstrap currently uses SQLAlchemy metadata; introduce versioned migrations before schema evolution.
+
+## Daily Continuity Rule
+
+- At the start of each workday, read `docs/project-memory.md`, `docs/status/current-state.md`, `docs/status/next-actions.md`, and the latest dated file in `docs/sessions/`.
+- Treat repository documentation and verified implementation/runtime evidence as canonical. Notebook references and chat summaries are convenience copies; resolve discrepancies against the repository.
+- When canonical docs change, refresh the corresponding Copilot notebook references. At the end of a work session, record verified outcomes and remaining actions in the dated session note, updating current state and next actions when they changed.
+- Consult `README.md`, relevant ADRs, and release notes as supplemental context when onboarding or making architecture/release decisions.
