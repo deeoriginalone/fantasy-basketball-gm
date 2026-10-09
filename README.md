@@ -1,2 +1,2 @@
-# fantasy-basketball-yahoo
-Fantasy basketball draft assistant, league analytics, roster management, and draft tracking platform.
+# fantasy-basketball
+Personal Fantasy Basketball GM and analytics platform using Yahoo Fantasy Sports data.
