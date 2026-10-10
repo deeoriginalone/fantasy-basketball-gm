@@ -42,9 +42,47 @@ Example request body:
 }
 ```
 
-The existing endpoint returns the roster-best pick, best value at risk before the next turn, snake timing, positional runs, per-player availability assessments, component scores, explanations, and any IDs it could not score. Draft input is evaluated but not saved; submit the current roster and player pool on each request. Recent pick IDs must be ordered oldest to newest; run detection examines the last ten. The response was extended in place; no endpoint was added.
+The v1 endpoint returns the roster-best pick, best value at risk before the next turn, snake timing, positional runs, per-player availability assessments, component scores, explanations, and any IDs it could not score. It remains stateless and backward compatible. Recent pick IDs must be ordered oldest to newest; run detection examines the last ten.
 
-For each player with ADP and draft timing, `market_value_delta = ADP - current_pick_number`: positive is a market reach, negative means the player has fallen past ADP. `reach_score` and `fall_score` range from 0 to 100 and scale each direction against one league round; they are descriptive heuristic indices, not probabilities or utility inputs. The response also includes `opportunity_cost_if_wait`, calculated as mode-adjusted roster utility multiplied by the estimated chance the player is gone at the next turn. `best_pick` maximizes team-specific utility; `best_value_before_next_pick` independently maximizes this at-risk value, so they can differ. Explanations separate roster fit, ADP, scarcity/run, survival, and wait cost.
+For each player with ADP and draft timing, `market_value_delta = ADP - current_pick_number`: positive is a market reach, negative means the player has fallen past ADP. `reach_score` and `fall_score` range from 0 to 100 and scale each direction against one league round; they are descriptive heuristic indices, not probabilities or utility inputs. `expected_loss_if_gone` is the nonnegative `wait_utility_now` at stake. `expected_wait_cost` and its compatible alias `opportunity_cost_if_wait` use fallback expectation and can be positive, zero, negative, or unavailable. The best roster-fit player and the player with greatest positive expected wait cost are selected independently. Fantrax supplies no draft-rank field; the response says that comparison is unavailable. Opponent roster demand is not an input; only available pick history, market ADP, and the existing heuristic run signal inform survival.
+
+### Persisted Draft Sessions (v2)
+
+Use v2 when a live draft should survive reloads. `POST /api/v2/draft/sessions` creates a session from the imported Yahoo league and requires `team_slots` to explicitly map every imported team key to its 1-based draft slot. The mapping is not inferred. `GET /api/v2/draft/sessions/{session_id}` reloads picks, targets, session version, and the latest recommendation snapshot.
+
+```json
+{
+  "league_key": "<imported-yahoo-league-key>",
+  "season": "2026-27",
+  "manager_team_key": "<manager-team-key>",
+  "draft_position": 3,
+  "total_teams": 4,
+  "rounds": 13,
+  "team_slots": {
+    "<yahoo-team-key-for-slot-1>": 1,
+    "<yahoo-team-key-for-slot-2>": 2,
+    "<manager-team-key>": 3,
+    "<yahoo-team-key-for-slot-4>": 4
+  },
+  "mode": "balanced"
+}
+```
+
+Record the next overall pick with `POST /api/v2/draft/sessions/{session_id}/picks/{overall_pick}` and `{ "selected_player_id": 10001, "expected_version": 0 }`. The service verifies that the player belongs to the imported Yahoo pool, derives the snake round/team slot from the overall pick, rejects out-of-order selections, and serializes updates with a session row lock. Repeating the same pick is idempotent. Stale versions return HTTP 409. Correct a pick with `PUT` on the same resource; undo only the latest pick with `POST .../{overall_pick}/undo`. Each mutation appends an audit event and a recommendation snapshot in the same transaction.
+
+Targets use `PUT` and `DELETE /api/v2/draft/sessions/{session_id}/targets/{player_id}` with statuses `target`, `priority`, `watch`, or `avoid`; writes require the expected session version. Snapshots preserve the input state, ordered pick/source evidence, and calculation response. Process assessment and realized player outcomes are not yet evaluated.
+
+For player A, the wait model uses the top five other scored candidates by `wait_utility_now` (roster utility plus mode adjustment, excluding the direct positional-run bonus). It estimates the fallback as the expected highest-utility alternative available at the next turn, assuming independent survival estimates. If alternatives are utility-ordered, `E_fallback = Σ_i [p_i × Π_{j<i}(1-p_j)] × U_i`; the probability no listed fallback survives contributes zero. Then `E_wait = P(A survives) × U(A) + P(A gone) × E_fallback`, and `expected_wait_cost = U(A) - E_wait`. Positive cost yields `draft_now`, zero/negative yields `wait`, and missing player/fallback survival yields `insufficient_evidence`. Run pressure affects pick ranking and survival but is excluded from `wait_utility_now`, so it is not added twice to wait value. Utility is held constant through intervening picks. These estimates are low-confidence, uncalibrated heuristics; no frequency or correlation data is available. The wait action does not apply the old 50% survival threshold. See [ADR 0006](docs/adr/0006-draft-survival-and-wait-method.md).
+
+### PostgreSQL Migrations
+
+The v2 draft tables are versioned separately from the legacy metadata bootstrap. Startup creates the established legacy tables, then applies pending migration revisions transactionally. Apply manually with:
+
+```bash
+docker compose run --build --rm --no-deps api python -m app.core.migrations upgrade
+```
+
+On a disposable database only, rollback the new draft tables with `docker compose run --rm --no-deps api python -m app.core.migrations downgrade base`; the next app startup reapplies pending migrations. This downgrade deletes draft sessions, picks, audit events, snapshots, and targets. Existing pre-v2 schema still uses the legacy bootstrap and is not covered by a baseline migration. See [ADR 0005](docs/adr/0005-draft-state-persistence.md).
 
 The Yahoo player payloads currently do not contain market ADP, draft rank, XRank, or ownership fields. Supply ADP values for available internal player IDs in `adp_by_player_id`; players without ADP or draft timing have null next-pick survival estimates. Survival compares ADP with your next snake-draft pick and adjusts for league size, an available draft-frequency value, and active positional runs. Fantrax does not supply draft frequency, so that input remains null and does not alter its estimates. These are heuristic, uncalibrated estimates. Modes are `balanced`, `upside`, and `safe`.
 
@@ -77,7 +115,7 @@ Other candidates remain excluded: Yahoo's verified player pool has no ADP; ESPN 
 
 Draft utility is a transparent heuristic based on Yahoo-weighted historical per-game production, replacement value, positional scarcity and need, durability, risk, upside, and roster-slot fit. It is not a projection or general player ranking.
 
-Survival uses request ADP overrides first, then fresh Fantrax ADP, then no value. It also uses snake pick distance and recent positional runs. `draft_now` and `safe_to_wait` are the existing 50% heuristic threshold, not calibrated recommendations. Fantrax supplies no draft frequency, and the survival curve has not been calibrated against an evaluation dataset. Responses mark confidence as `heuristic_unvalidated`; missing or stale ADP stays unknown.
+Survival uses request ADP overrides first on v1; persisted v2 sessions use fresh stored Fantrax ADP. Both use snake pick distance and recent positional runs. Fantrax supplies no draft frequency, and the survival curve has not been calibrated against an evaluation dataset. Survival confidence is `heuristic_unvalidated`; missing or stale ADP stays unknown. v1 remains stateless and exposes survival independently; v2 action semantics use expected fallback loss.
 
 Historical Yahoo league `466.l.51267` and its `draftresults` endpoint returned HTTP 403, and the current league has not drafted. No historical engine-vs-ranking outperformance claim is available until real historical draft state, ADP snapshots, and season outcomes are supplied.
 
@@ -94,9 +132,14 @@ Historical Yahoo league `466.l.51267` and its `draftresults` endpoint returned H
 - `POST /api/v1/nba/import`
 - `POST /api/v1/draft/metrics`
 - `POST /api/v1/draft/utility`
+- `POST /api/v2/draft/sessions`
+- `GET /api/v2/draft/sessions/{session_id}`
+- `POST|PUT /api/v2/draft/sessions/{session_id}/picks/{overall_pick}`
+- `POST /api/v2/draft/sessions/{session_id}/picks/{overall_pick}/undo`
+- `PUT|DELETE /api/v2/draft/sessions/{session_id}/targets/{player_id}`
 
 NBA provider calls happen only during imports. Player and league reads use PostgreSQL.
 
 ## Scope
 
-No waivers, trades, matchup analysis, alerts, news, season management, AI summaries, start/sit, projections, draft simulation, or frontend are included. See [current state](docs/status/current-state.md), [next actions](docs/status/next-actions.md), [project memory](docs/project-memory.md), and [release notes](docs/releases/v0.1.0-yahoo-working.md) for boundaries and verified results.
+This repository has no frontend, so the requested live Draft page is not implemented here. Category-league analytics, opponent roster demand, alert generation, room velocity, full sortable board/comparison UI, calibration, simulation, and retrospective decision-quality scoring remain deferred until those foundations exist and pass source-data validation. No external provider is called by v2 session reads or calculations. See [current state](docs/status/current-state.md), [next actions](docs/status/next-actions.md), [project memory](docs/project-memory.md), and [ADRs](docs/adr/0005-draft-state-persistence.md).

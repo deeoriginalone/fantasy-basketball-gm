@@ -11,6 +11,7 @@ from app.features.leagues.models import League, LeagueSettings, Team
 from app.features.players.models import FantasyTeam, LeaguePlayer, PlayerIdentity, RosterEntry
 from app.main import app
 from app.services.yahoo.client import YahooFantasyClient
+from schema_support import create_test_schema
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"),
@@ -60,7 +61,7 @@ def test_player_and_league_read_routes_use_postgres_only(monkeypatch) -> None:
 
     async def seed() -> int:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
         async with SessionFactory() as session:
             async with session.begin():
                 session.add(

@@ -21,7 +21,13 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def initialize_schema() -> None:
+    from app.core.migrations import MIGRATED_TABLES, upgrade
     from app.features.draft.models import (
+        DraftPick,
+        DraftPickEvent,
+        DraftRecommendationSnapshot,
+        DraftSession,
+        DraftTarget,
         DraftMarketData,
         DraftMarketProviderSnapshot,
         DraftMarketSyncRun,
@@ -41,6 +47,11 @@ async def initialize_schema() -> None:
     from app.features.yahoo.models import YahooCredential
 
     _ = (
+        DraftSession,
+        DraftPick,
+        DraftPickEvent,
+        DraftRecommendationSnapshot,
+        DraftTarget,
         DraftPlayerMetric,
         DraftMarketData,
         DraftMarketProviderSnapshot,
@@ -62,7 +73,13 @@ async def initialize_schema() -> None:
         PlayerSchedule,
     )
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+        legacy_tables = [
+            table for table in Base.metadata.sorted_tables if table.name not in MIGRATED_TABLES
+        ]
+        await connection.run_sync(lambda sync_connection: Base.metadata.create_all(
+            sync_connection,
+            tables=legacy_tables,
+        ))
         await connection.execute(text("ALTER TABLE nba_games ALTER COLUMN home_team_id DROP NOT NULL"))
         await connection.execute(text("ALTER TABLE nba_games ALTER COLUMN away_team_id DROP NOT NULL"))
         for column in (
@@ -78,3 +95,4 @@ async def initialize_schema() -> None:
             await connection.execute(text(
                 f"ALTER TABLE draft_market_sync_runs ALTER COLUMN {column} DROP NOT NULL"
             ))
+        await upgrade(connection)

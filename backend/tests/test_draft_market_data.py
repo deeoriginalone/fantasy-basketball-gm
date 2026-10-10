@@ -12,6 +12,7 @@ from app.core.database import Base
 from app.features.draft.models import DraftMarketData
 from app.features.players.models import PlayerIdentity
 from app.services.draft.market_import import import_market_rows, parse_market_rows
+from schema_support import create_test_schema
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
@@ -54,7 +55,7 @@ def test_market_upserts_by_player_season_source_without_touching_identity() -> N
 
     async def scenario() -> None:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
         identity_id = None
         try:
             async with session_factory() as session:

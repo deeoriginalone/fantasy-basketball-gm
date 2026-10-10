@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from app.core.database import engine, initialize_schema
 from app.features.draft.router import router as draft_router
+from app.features.draft.router import v2_router as draft_v2_router
 from app.features.leagues.router import router as league_router
 from app.features.leagues.router import single_league_router
 from app.features.nba.router import router as nba_router
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Fantasy Basketball GM API", version="0.1.0", lifespan=lifespan)
 app.include_router(yahoo_router)
 app.include_router(draft_router)
+app.include_router(draft_v2_router)
 app.include_router(league_router)
 app.include_router(single_league_router)
 app.include_router(players_router)

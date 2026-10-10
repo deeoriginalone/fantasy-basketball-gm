@@ -14,6 +14,7 @@ from app.features.leagues.models import League, Team
 from app.features.players.models import FantasyTeam, LeaguePlayer, PlayerIdentity, RosterEntry
 from app.features.players.service import import_yahoo_players
 from app.services.yahoo.auth import YahooAuthService
+from schema_support import create_test_schema
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -117,7 +118,7 @@ def test_player_identity_create_update_deduplicate_and_roster_persistence(monkey
 
     async def scenario() -> dict:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
         try:
             async with session_factory() as session:
                 async with session.begin():

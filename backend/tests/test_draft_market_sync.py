@@ -21,6 +21,7 @@ from app.features.players.models import PlayerIdentity
 from app.services.draft.market_providers.base import DraftMarketRecord
 from app.services.draft.market_providers.fantrax import FANTRAX_SOURCE
 from app.services.draft.market_sync import record_market_sync_failure, sync_market_data
+from schema_support import create_test_schema
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
@@ -89,7 +90,7 @@ def test_market_sync_is_idempotent_and_provider_failure_preserves_prior_data() -
 
     async def scenario() -> None:
         async with test_engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
             for column in (
                 "provider_records_fetched",
                 "matched_players",

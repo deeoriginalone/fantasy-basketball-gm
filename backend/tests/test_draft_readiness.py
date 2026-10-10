@@ -19,6 +19,7 @@ from app.features.players.models import LeaguePlayer, PlayerIdentity
 from app.main import app
 from app.services.draft.metrics import recompute_draft_metrics
 from app.services.draft.utility import calculate_draft_utility
+from schema_support import create_test_schema
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
@@ -55,7 +56,7 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
 
     async def scenario() -> None:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
         try:
             async with session_factory() as session:
                 session.add(League(
@@ -187,7 +188,7 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                         season="2026-27",
                         source="fantrax",
                         adp=2.0,
-                        draft_rank=1,
+                        draft_rank=None,
                         draft_frequency=10.0,
                     ),
                     DraftMarketData(
@@ -195,7 +196,7 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                         season="2026-27",
                         source="fantrax",
                         adp=0.1,
-                        draft_rank=1,
+                        draft_rank=None,
                         draft_frequency=None,
                     ),
                 ])
@@ -217,13 +218,22 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 assert result.best_pick.player_identity_id == center_identity.id
                 assert result.best_pick.player_name == "Roster Fit Center"
                 assert result.best_pick.adp == 2.0
-                assert result.best_pick.draft_rank == 1
+                assert result.best_pick.draft_rank is None
                 assert result.best_pick.draft_frequency == 10.0
                 assert result.best_pick.adp_source == "fantrax"
                 assert result.best_pick.market_value_delta == 1.0
                 assert result.best_pick.reach_score == 50.0
                 assert result.best_pick.fall_score == 0.0
                 assert result.best_pick.opportunity_cost_if_wait is not None
+                assert result.best_pick.expected_loss_if_gone == pytest.approx(
+                    result.best_pick.wait_utility_now
+                )
+                assert result.best_pick.opportunity_cost_if_wait == pytest.approx(
+                    result.best_pick.wait_utility_now
+                    - result.best_pick.expected_wait_utility
+                )
+                assert result.best_pick.expected_fallback_utility is not None
+                assert result.best_pick.wait_cost_method == "independent_heuristic"
                 assert result.best_pick.roster_construction_score == 100
                 assert result.unscored_available_player_ids == []
                 assert result.best_pick.positional_need_score > 0
@@ -232,8 +242,12 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 assert result.draft_timing.picks_until_next_turn == 2
                 assert next(run for run in result.draft_runs if run.position_group == "forward").active
                 assert result.best_value_before_next_pick is not None
-                assert result.best_value_before_next_pick.player_identity_id == guard_identity.id
-                assert result.best_value_before_next_pick.player_identity_id != result.best_pick.player_identity_id
+                assert result.best_value_before_next_pick.expected_wait_cost == pytest.approx(
+                    max(
+                        result.best_pick.expected_wait_cost,
+                        result.best_value_before_next_pick.expected_wait_cost,
+                    )
+                )
                 assert len(result.player_availability) == 2
                 availability = {
                     player.player_identity_id: player for player in result.player_availability
@@ -242,20 +256,36 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 assert availability[center_identity.id].market_value_delta == 1.0
                 assert availability[center_identity.id].reach_score == 50.0
                 assert availability[center_identity.id].fall_score == 0.0
+                assert availability[center_identity.id].miss_risk_score is not None
+                assert availability[center_identity.id].expected_loss_if_gone is not None
+                assert availability[center_identity.id].opportunity_cost_if_wait == pytest.approx(
+                    result.best_pick.opportunity_cost_if_wait
+                )
                 assert availability[center_identity.id].survival_confidence == "heuristic_unvalidated"
                 assert availability[center_identity.id].next_pick_survival_probability is not None
+                assert availability[center_identity.id].miss_risk_score == pytest.approx(
+                    100 * (1 - availability[center_identity.id].next_pick_survival_probability),
+                    abs=0.1,
+                )
                 assert availability[center_identity.id].draft_now is True
                 assert availability[center_identity.id].safe_to_wait is False
                 assert availability[guard_identity.id].data_freshness == "fresh"
                 assert availability[guard_identity.id].draft_frequency is None
                 assert availability[guard_identity.id].next_pick_survival_probability is not None
                 assert availability[guard_identity.id].draft_now is True
+                assert availability[guard_identity.id].expected_loss_if_gone is not None
+                assert availability[guard_identity.id].opportunity_cost_if_wait is not None
                 assert result.best_pick.reasons
                 assert result.best_value_before_next_pick.reasons
                 assert result.best_value_before_next_pick.opportunity_cost_if_wait is not None
                 assert any(reason.startswith("ADP impact:") for reason in result.best_pick.reasons)
                 assert any(reason.startswith("Survival impact:") for reason in result.best_pick.reasons)
                 assert any(reason.startswith("Roster construction impact:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Why selected:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Why not top rank:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Decision: Draft now") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Team-need impact:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Survival confidence:") for reason in result.best_pick.reasons)
 
                 override_request = request.model_copy(update={
                     "adp_by_player_id": {center_identity.id: 100.0},
@@ -268,6 +298,10 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 assert override_availability.adp == 100.0
                 assert override_availability.adp_source == "request"
                 assert override_availability.data_freshness == "request"
+                assert override_availability.draft_now is True
+                assert override_availability.safe_to_wait is False
+                assert override_availability.decision_action == "draft_now"
+                assert "expected wait cost" in override_availability.explanation
                 assert (
                     override_availability.next_pick_survival_probability
                     > availability[center_identity.id].next_pick_survival_probability
@@ -288,6 +322,7 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 assert stale_availability.data_freshness == "stale"
                 assert stale_availability.next_pick_survival_probability is None
                 assert stale_availability.draft_now is None
+                assert stale_availability.decision_action == "insufficient_evidence"
                 assert stale_availability.blocker == "ADP data is stale"
         finally:
             async with session_factory() as session:

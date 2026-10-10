@@ -2,10 +2,13 @@ from types import SimpleNamespace
 
 from app.services.draft.utility import (
     _availability_score,
+    _expected_fallback_utility,
+    _expected_wait_utility,
     _market_timing_scores,
     _mode_adjustment,
     _run_bonus,
     _survival_probability,
+    _wait_decision_action,
     calculate_snake_draft_timing,
     detect_draft_runs,
     _survival_probability,
@@ -71,3 +74,22 @@ def test_modes_adjust_player_profile_differently() -> None:
     assert _mode_adjustment(safe_player, "safe") > _mode_adjustment(upside_player, "safe")
     assert _mode_adjustment(upside_player, "upside") > _mode_adjustment(safe_player, "upside")
     assert _mode_adjustment(safe_player, "balanced") == 0
+
+
+def test_expected_wait_cost_uses_expected_fallback_value_and_allows_nonpositive_cost() -> None:
+    fallback_utility, branches = _expected_fallback_utility([
+        (1, "Fallback A", 10.0, 0.5),
+        (2, "Fallback B", 6.0, 0.5),
+    ])
+    assert fallback_utility == 6.5
+    assert [branch.probability_selected_if_waiting for branch in branches] == [0.5, 0.25]
+
+    expected_wait, wait_cost = _expected_wait_utility(10.0, 0.2, 4.0)
+    assert expected_wait == 5.2
+    assert wait_cost == 4.8
+    assert _expected_wait_utility(10.0, 0.5, 10.0) == (10.0, 0.0)
+    assert _expected_wait_utility(10.0, 0.5, 14.0) == (12.0, -2.0)
+    assert _wait_decision_action(4.8) == "draft_now"
+    assert _wait_decision_action(0.0) == "wait"
+    assert _wait_decision_action(-2.0) == "wait"
+    assert _wait_decision_action(None) == "insufficient_evidence"

@@ -21,6 +21,7 @@ from app.features.nba.models import (
 from app.features.players.models import PlayerIdentity
 from app.main import app
 from app.services.nba.importer import import_nba_data
+from schema_support import create_test_schema
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
 
@@ -176,7 +177,7 @@ def test_nba_import_is_idempotent_and_preserves_yahoo_identity() -> None:
 
     async def scenario() -> None:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await create_test_schema(connection)
             await connection.execute(text("ALTER TABLE nba_games ALTER COLUMN home_team_id DROP NOT NULL"))
             await connection.execute(text("ALTER TABLE nba_games ALTER COLUMN away_team_id DROP NOT NULL"))
         try:

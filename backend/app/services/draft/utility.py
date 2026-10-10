@@ -9,6 +9,7 @@ from app.features.draft.contracts import (
     DraftPlayerAvailability,
     DraftRun,
     DraftTiming,
+    DraftWaitFallback,
     DraftUtilityPick,
     DraftUtilityRequest,
     DraftUtilityResult,
@@ -256,6 +257,45 @@ def _run_bonus(metric: DraftPlayerMetric, positions: set[str], active_runs: list
     return value_scale * bonus
 
 
+def _expected_fallback_utility(
+    fallbacks: list[tuple[int, str, float, float]],
+) -> tuple[float, list[DraftWaitFallback]]:
+    ordered = sorted(fallbacks, key=lambda candidate: (candidate[2], -candidate[0]), reverse=True)
+    probability_no_higher_fallback = 1.0
+    expected_utility = 0.0
+    scenarios = []
+    for player_id, player_name, utility, survival_probability in ordered:
+        selection_probability = probability_no_higher_fallback * survival_probability
+        expected_utility += selection_probability * utility
+        scenarios.append(DraftWaitFallback(
+            player_identity_id=player_id,
+            player_name=player_name,
+            utility_score=utility,
+            survival_probability=survival_probability,
+            probability_selected_if_waiting=selection_probability,
+        ))
+        probability_no_higher_fallback *= 1.0 - survival_probability
+    return expected_utility, scenarios
+
+
+def _expected_wait_utility(
+    utility_now: float,
+    survival_probability: float,
+    expected_fallback_utility: float,
+) -> tuple[float, float]:
+    expected_wait = (
+        survival_probability * utility_now
+        + (1.0 - survival_probability) * expected_fallback_utility
+    )
+    return expected_wait, utility_now - expected_wait
+
+
+def _wait_decision_action(wait_cost: float | None) -> str:
+    if wait_cost is None:
+        return "insufficient_evidence"
+    return "draft_now" if wait_cost > 0 else "wait"
+
+
 async def calculate_draft_utility(
     session: AsyncSession,
     request: DraftUtilityRequest,
@@ -402,8 +442,19 @@ async def calculate_draft_utility(
             default=0,
         )
 
+    market_ranked_candidates = [
+        (market_inputs[player_id][1], player_id)
+        for player_id in available_ids
+        if market_inputs[player_id][1] is not None
+        and player_id in metrics_by_identity
+        and player_id in identities_by_id
+        and identities_by_id[player_id].nba_player_id
+    ]
+    market_rank_leader = min(market_ranked_candidates, default=None)
+
     availability_by_id: dict[int, tuple[float | None, float | None]] = {}
     player_availability = []
+    wait_cost_by_id: dict[int, tuple[float | None, float | None]] = {}
     for player_id in available_ids:
         metric = metrics_by_identity.get(player_id)
         adp, draft_rank, draft_frequency, adp_source, data_freshness, is_stale = market_inputs[player_id]
@@ -413,6 +464,7 @@ async def calculate_draft_utility(
             draft_timing.total_teams if draft_timing else None,
         )
         survival_probability = None
+        miss_risk_score = None
         availability_score = None
         blocker = None
         draft_now = None
@@ -431,6 +483,7 @@ async def calculate_draft_utility(
                 run_count_for(player_id),
             )
             survival_confidence = "heuristic_unvalidated"
+            miss_risk_score = round(100.0 * (1.0 - survival_probability), 1)
             draft_now = survival_probability < SURVIVAL_DECISION_THRESHOLD
             safe_to_wait = not draft_now
             if metric is None:
@@ -464,11 +517,11 @@ async def calculate_draft_utility(
         if survival_probability is None:
             explanation = blocker or "Next-pick survival is unknown because ADP or draft timing is missing."
         else:
-            decision = "Draft now" if draft_now else "Wait is favored by the heuristic"
             explanation = (
-                f"{decision}: estimated {survival_probability:.0%} chance to survive until pick "
+                f"Estimated {survival_probability:.0%} chance to survive until pick "
                 f"{draft_timing.next_pick_number} using {adp_source} ADP. {market_explanation} "
-                "The 50% decision threshold is a heuristic, not a calibrated probability."
+                f"Estimated miss risk is {miss_risk_score:.0f}/100. "
+                "Survival is an uncalibrated heuristic; the action uses expected fallback utility when available."
             )
         if market_value_delta is not None and survival_probability is None:
             explanation = f"{market_explanation} {explanation}"
@@ -485,10 +538,13 @@ async def calculate_draft_utility(
             positional_scarcity=metric.positional_scarcity if metric else None,
             availability_score=availability_score,
             next_pick_survival_probability=survival_probability,
+            miss_risk_score=miss_risk_score,
             survival_confidence=survival_confidence,
             data_freshness=data_freshness,
             draft_now=draft_now,
             safe_to_wait=safe_to_wait,
+            decision_action="insufficient_evidence",
+            decision_confidence="unavailable",
             explanation=explanation,
             blocker=blocker,
         ))
@@ -496,7 +552,7 @@ async def calculate_draft_utility(
     best_pick = None
     best_key = None
     best_value_before_pick = None
-    best_value_before_key = None
+    candidate_picks: dict[int, DraftUtilityPick] = {}
     for player_id in available_ids:
         identity = identities_by_id.get(player_id)
         metric = metrics_by_identity.get(player_id)
@@ -544,16 +600,12 @@ async def calculate_draft_utility(
             if survival_probability is not None else None
         )
         safe_to_wait = not draft_now if draft_now is not None else None
-        urgency_bonus = 0.0
-        if survival_probability is not None and draft_timing is not None:
-            urgency_bonus = max(abs(metric.fantasy_value), 1.0) * (
-                0.08
-                * (metric.positional_scarcity / 100.0)
-                * (1.0 - survival_probability)
-            )
-        mode_adjusted_utility_score = utility_score + mode_adjustment + run_bonus + urgency_bonus
-        opportunity_cost_if_wait = (
-            mode_adjusted_utility_score * (1.0 - survival_probability)
+        wait_utility_now = utility_score + mode_adjustment
+        mode_adjusted_utility_score = wait_utility_now + run_bonus
+        expected_loss_if_gone = max(0.0, wait_utility_now)
+        opportunity_cost_if_wait = None
+        miss_risk_score = (
+            round(100.0 * (1.0 - survival_probability), 1)
             if survival_probability is not None else None
         )
         market_value_delta, reach_score, fall_score = _market_timing_scores(
@@ -570,6 +622,20 @@ async def calculate_draft_utility(
             f"Scarcity impact: {metric.positional_scarcity:.0f}/100; replacement value is {metric.replacement_value:.2f}.",
             f"Roster construction impact: {construction_score:.0f}/100 for the best available slot fit.",
         ]
+        if draft_rank is None or market_rank_leader is None:
+            reasons.append(
+                "Why not top rank: market draft-rank comparison is unavailable; Fantrax supplies ADP, not draft rank."
+            )
+        elif player_id == market_rank_leader[1]:
+            reasons.append(
+                f"Why not top rank: this is the top available market-ranked player (# {draft_rank}); team utility also favors this fit."
+            )
+        else:
+            leader_identity = identities_by_id[market_rank_leader[1]]
+            reasons.append(
+                f"Why not top rank: {leader_identity.player_name} is market rank # {market_rank_leader[0]}, "
+                f"but this player's team-specific utility is prioritized over market rank # {draft_rank}."
+            )
         if market_value_delta is not None:
             reasons.append(
                 f"ADP impact: ADP {adp:.1f} vs current pick {draft_timing.current_pick_number} gives market delta {market_value_delta:+.1f} picks (reach {reach_score:.0f}/100, fall {fall_score:.0f}/100)."
@@ -580,16 +646,17 @@ async def calculate_draft_utility(
             reasons.append(f"Scarcity/run impact: active {'/'.join(run_for_player)} run adds {run_bonus:.2f} utility pressure.")
         if survival_probability is not None and draft_timing is not None:
             reasons.append(
-                f"Survival impact: estimated {survival_probability:.0%} chance to remain available at pick {draft_timing.next_pick_number}; draft now is {draft_now}, safe to wait is {safe_to_wait}."
+                f"Survival impact: estimated {survival_probability:.0%} chance to remain available at pick {draft_timing.next_pick_number}; miss risk is {miss_risk_score:.0f}/100."
             )
-            reasons.append(
-                f"Opportunity cost if you wait: {opportunity_cost_if_wait:.2f} utility at risk before your next turn."
-            )
-            reasons.append("Survival and the 50% decision threshold are heuristic and uncalibrated.")
+            reasons.append(f"Conditional utility at stake if gone: {expected_loss_if_gone:.2f}.")
+            reasons.append(f"Survival confidence: {survival_confidence}; availability is uncalibrated and is used once in the wait scenarios.")
         else:
             reasons.append(
                 "Next-pick survival is unknown because ADP is stale or unavailable, or draft timing is missing."
             )
+        reasons.append(
+            "Team-need impact: this score reflects your roster demand; opponent roster demand is unavailable unless indicated by recent positional runs."
+        )
         pick = DraftUtilityPick(
             player_identity_id=identity.id,
             yahoo_player_id=identity.yahoo_player_id,
@@ -606,11 +673,21 @@ async def calculate_draft_utility(
             roster_construction_score=construction_score,
             utility_score=utility_score,
             mode_adjusted_utility_score=mode_adjusted_utility_score,
+            wait_utility_now=wait_utility_now,
             adp=adp,
             market_value_delta=market_value_delta,
             reach_score=reach_score,
             fall_score=fall_score,
+            miss_risk_score=miss_risk_score,
+            expected_loss_if_gone=expected_loss_if_gone,
             opportunity_cost_if_wait=opportunity_cost_if_wait,
+            expected_fallback_utility=None,
+            expected_wait_utility=None,
+            expected_wait_cost=None,
+            wait_fallbacks=[],
+            decision_action="insufficient_evidence",
+            decision_confidence="unavailable",
+            wait_cost_method="unavailable",
             draft_rank=draft_rank,
             draft_frequency=draft_frequency,
             adp_source=adp_source,
@@ -623,22 +700,143 @@ async def calculate_draft_utility(
             run_bonus=run_bonus,
             reasons=reasons,
         )
+        candidate_picks[player_id] = pick
         tie_break = (mode_adjusted_utility_score, metric.fantasy_value, -identity.id)
         if best_key is None or tie_break > best_key:
             best_key = tie_break
             best_pick = pick
-        if survival_probability is not None:
-            value_at_risk = opportunity_cost_if_wait
-            assert value_at_risk is not None
-            before_pick_key = (value_at_risk, mode_adjusted_utility_score, -identity.id)
-            if best_value_before_key is None or before_pick_key > best_value_before_key:
-                best_value_before_key = before_pick_key
-                best_value_before_pick = pick.model_copy(update={
-                    "reasons": [
-                        *reasons,
-                        f"Highest opportunity cost if you wait: {value_at_risk:.2f} utility at risk before the next turn.",
-                    ]
-                })
+
+    wait_cost_by_id = {}
+    for player_id, pick in candidate_picks.items():
+        fallback_picks = sorted(
+            (candidate for candidate_id, candidate in candidate_picks.items()
+             if candidate_id != player_id),
+            key=lambda candidate: (candidate.wait_utility_now, -candidate.player_identity_id),
+            reverse=True,
+        )[:5]
+        fallback_utility = None
+        fallback_scenarios: list[DraftWaitFallback] = []
+        wait_utility = None
+        wait_cost = None
+        decision_action = "insufficient_evidence"
+        decision_confidence = "unavailable"
+        wait_method = "unavailable"
+        if (
+            pick.next_pick_survival_probability is not None
+            and fallback_picks
+            and all(candidate.next_pick_survival_probability is not None for candidate in fallback_picks)
+        ):
+            fallback_inputs = [
+                (
+                    candidate.player_identity_id,
+                    candidate.player_name,
+                    candidate.wait_utility_now,
+                    candidate.next_pick_survival_probability,
+                )
+                for candidate in fallback_picks
+                if candidate.next_pick_survival_probability is not None
+            ]
+            fallback_utility, fallback_scenarios = _expected_fallback_utility(fallback_inputs)
+            survival = pick.next_pick_survival_probability
+            wait_utility, wait_cost = _expected_wait_utility(
+                pick.wait_utility_now,
+                survival,
+                fallback_utility,
+            )
+            decision_action = _wait_decision_action(wait_cost)
+            decision_confidence = "low"
+            wait_method = "independent_heuristic"
+        decision_note = (
+            f"Expected wait utility {wait_utility:.2f}; current utility minus expected wait utility "
+            f"is {wait_cost:+.2f}. Fallback assumes independent heuristic survival and unchanged utility."
+            if wait_cost is not None
+            else "Wait decision unavailable: this player or the top fallback alternatives lack usable next-pick survival."
+        )
+        reasons = [*pick.reasons, decision_note]
+        if decision_action == "draft_now":
+            reasons.append("Decision: Draft now; modeled expected wait utility is lower than current utility.")
+        elif decision_action == "wait":
+            reasons.append("Decision: Wait; modeled expected wait utility is at least current utility.")
+        else:
+            reasons.append("Decision: Insufficient evidence; fallback or survival inputs are unavailable.")
+        candidate_picks[player_id] = pick.model_copy(update={
+            "expected_fallback_utility": fallback_utility,
+            "expected_wait_utility": wait_utility,
+            "expected_wait_cost": wait_cost,
+            "opportunity_cost_if_wait": wait_cost,
+            "wait_fallbacks": fallback_scenarios,
+            "decision_action": decision_action,
+            "decision_confidence": decision_confidence,
+            "wait_cost_method": wait_method,
+            "draft_now": True if decision_action == "draft_now" else False if decision_action == "wait" else None,
+            "safe_to_wait": True if decision_action == "wait" else False if decision_action == "draft_now" else None,
+            "reasons": reasons,
+        })
+        wait_cost_by_id[player_id] = (pick.expected_loss_if_gone, wait_cost)
+
+    if best_pick is not None:
+        best_pick = candidate_picks[best_pick.player_identity_id]
+    ranked_wait_candidates = [
+        pick for pick in candidate_picks.values()
+        if pick.expected_wait_cost is not None and pick.expected_wait_cost > 0
+    ]
+    if ranked_wait_candidates:
+        best_value_before_pick = max(
+            ranked_wait_candidates,
+            key=lambda pick: (pick.expected_wait_cost, pick.mode_adjusted_utility_score, -pick.player_identity_id),
+        ).model_copy(update={
+            "reasons": [
+                *max(
+                    ranked_wait_candidates,
+                    key=lambda pick: (pick.expected_wait_cost, pick.mode_adjusted_utility_score, -pick.player_identity_id),
+                ).reasons,
+                "Highest positive expected utility loss from waiting among candidates with sufficient fallback estimates.",
+            ]
+        })
+
+    player_availability = [
+        player.model_copy(update={
+            "expected_loss_if_gone": wait_cost_by_id.get(player.player_identity_id, (None, None))[0],
+            "opportunity_cost_if_wait": wait_cost_by_id.get(player.player_identity_id, (None, None))[1],
+            "draft_now": (
+                True if candidate_picks[player.player_identity_id].decision_action == "draft_now"
+                else False if candidate_picks[player.player_identity_id].decision_action == "wait"
+                else None
+            ) if player.player_identity_id in candidate_picks else None,
+            "safe_to_wait": (
+                True if candidate_picks[player.player_identity_id].decision_action == "wait"
+                else False if candidate_picks[player.player_identity_id].decision_action == "draft_now"
+                else None
+            ) if player.player_identity_id in candidate_picks else None,
+            "decision_action": candidate_picks[player.player_identity_id].decision_action
+            if player.player_identity_id in candidate_picks else "insufficient_evidence",
+            "decision_confidence": candidate_picks[player.player_identity_id].decision_confidence
+            if player.player_identity_id in candidate_picks else "unavailable",
+            "explanation": (
+                f"{player.explanation} Decision: {candidate_picks[player.player_identity_id].decision_action}; "
+                f"expected wait cost is {candidate_picks[player.player_identity_id].expected_wait_cost:+.2f}."
+                if player.player_identity_id in candidate_picks
+                and candidate_picks[player.player_identity_id].expected_wait_cost is not None
+                else player.explanation
+            ),
+        })
+        for player in player_availability
+    ]
+
+    if best_pick is not None:
+        best_pick = best_pick.model_copy(update={
+            "reasons": [
+                *best_pick.reasons,
+                "Why selected: highest mode-adjusted team utility among the scored available players.",
+            ]
+        })
+    if best_value_before_pick is not None:
+        best_value_before_pick = best_value_before_pick.model_copy(update={
+            "reasons": [
+                *best_value_before_pick.reasons,
+                "Why selected as best value at risk: highest estimated utility cost of waiting among players with usable survival estimates.",
+            ]
+        })
 
     return DraftUtilityResult(
         league_key=request.league_key,
@@ -647,6 +845,8 @@ async def calculate_draft_utility(
         drafted_count=len(drafted_ids),
         available_count=len(available_ids),
         mode=request.mode,
+        primary_action=best_pick.decision_action if best_pick else "insufficient_evidence",
+        decision_confidence=best_pick.decision_confidence if best_pick else "unavailable",
         draft_timing=draft_timing,
         draft_runs=draft_runs,
         player_availability=player_availability,
