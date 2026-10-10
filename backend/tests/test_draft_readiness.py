@@ -3,14 +3,16 @@ import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.database import Base
 from app.features.draft.contracts import DraftUtilityRequest
-from app.features.draft.models import DraftPlayerMetric
+from app.features.draft.models import DraftMarketData, DraftPlayerMetric
 from app.features.leagues.models import League, LeagueSettings, Team
 from app.features.nba.models import NbaPlayer, NbaPlayerSeasonStats, NbaTeam
 from app.features.players.models import LeaguePlayer, PlayerIdentity
@@ -105,8 +107,8 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                         nba_player_id=nba_ids[index],
                         player_name=name,
                         team=abbreviation,
-                        position=positions,
-                        status=None,
+                         position=positions,
+                         status=None,
                     )
                     session.add(identity)
                     await session.flush()
@@ -163,26 +165,134 @@ def test_metrics_use_yahoo_points_and_utility_is_roster_specific() -> None:
                 center_metric.durability_score = 80
                 center_metric.risk_score = 20
                 center_metric.upside_score = 80
+                session.add_all([
+                    DraftMarketData(
+                        player_id=guard_identity.id,
+                        season="2026-27",
+                        source="manual",
+                        adp=1.0,
+                        draft_rank=1,
+                        draft_frequency=100.0,
+                    ),
+                    DraftMarketData(
+                        player_id=center_identity.id,
+                        season="2026-27",
+                        source="manual",
+                        adp=50.0,
+                        draft_rank=45,
+                        draft_frequency=80.0,
+                    ),
+                    DraftMarketData(
+                        player_id=center_identity.id,
+                        season="2026-27",
+                        source="fantrax",
+                        adp=2.0,
+                        draft_rank=1,
+                        draft_frequency=10.0,
+                    ),
+                    DraftMarketData(
+                        player_id=guard_identity.id,
+                        season="2026-27",
+                        source="fantrax",
+                        adp=0.1,
+                        draft_rank=1,
+                        draft_frequency=None,
+                    ),
+                ])
                 await session.commit()
 
                 request = DraftUtilityRequest(
                     league_key=league_key,
                     team_key=team_key,
                     season="2026-27",
+                    draft_position=1,
+                    round_number=1,
+                    total_teams=2,
                     drafted_player_ids=[identity.id for identity in identities[:5]],
                     available_player_ids=[guard_identity.id, center_identity.id],
+                    recent_pick_player_ids=[identity.id for identity in identities[2:5]],
                 )
                 result = await calculate_draft_utility(session, request)
                 assert result.best_pick is not None
                 assert result.best_pick.player_identity_id == center_identity.id
                 assert result.best_pick.player_name == "Roster Fit Center"
+                assert result.best_pick.adp == 2.0
+                assert result.best_pick.draft_rank == 1
+                assert result.best_pick.draft_frequency == 10.0
+                assert result.best_pick.adp_source == "fantrax"
+                assert result.best_pick.market_value_delta == 1.0
+                assert result.best_pick.reach_score == 50.0
+                assert result.best_pick.fall_score == 0.0
+                assert result.best_pick.opportunity_cost_if_wait is not None
                 assert result.best_pick.roster_construction_score == 100
                 assert result.unscored_available_player_ids == []
                 assert result.best_pick.positional_need_score > 0
                 assert result.best_pick.utility_score > guard_metric.fantasy_value
+                assert result.draft_timing is not None
+                assert result.draft_timing.picks_until_next_turn == 2
+                assert next(run for run in result.draft_runs if run.position_group == "forward").active
+                assert result.best_value_before_next_pick is not None
+                assert result.best_value_before_next_pick.player_identity_id == guard_identity.id
+                assert result.best_value_before_next_pick.player_identity_id != result.best_pick.player_identity_id
+                assert len(result.player_availability) == 2
+                availability = {
+                    player.player_identity_id: player for player in result.player_availability
+                }
+                assert availability[center_identity.id].data_freshness == "fresh"
+                assert availability[center_identity.id].market_value_delta == 1.0
+                assert availability[center_identity.id].reach_score == 50.0
+                assert availability[center_identity.id].fall_score == 0.0
+                assert availability[center_identity.id].survival_confidence == "heuristic_unvalidated"
+                assert availability[center_identity.id].next_pick_survival_probability is not None
+                assert availability[center_identity.id].draft_now is True
+                assert availability[center_identity.id].safe_to_wait is False
+                assert availability[guard_identity.id].data_freshness == "fresh"
+                assert availability[guard_identity.id].draft_frequency is None
+                assert availability[guard_identity.id].next_pick_survival_probability is not None
+                assert availability[guard_identity.id].draft_now is True
+                assert result.best_pick.reasons
+                assert result.best_value_before_next_pick.reasons
+                assert result.best_value_before_next_pick.opportunity_cost_if_wait is not None
+                assert any(reason.startswith("ADP impact:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Survival impact:") for reason in result.best_pick.reasons)
+                assert any(reason.startswith("Roster construction impact:") for reason in result.best_pick.reasons)
+
+                override_request = request.model_copy(update={
+                    "adp_by_player_id": {center_identity.id: 100.0},
+                })
+                override_result = await calculate_draft_utility(session, override_request)
+                override_availability = next(
+                    player for player in override_result.player_availability
+                    if player.player_identity_id == center_identity.id
+                )
+                assert override_availability.adp == 100.0
+                assert override_availability.adp_source == "request"
+                assert override_availability.data_freshness == "request"
+                assert (
+                    override_availability.next_pick_survival_probability
+                    > availability[center_identity.id].next_pick_survival_probability
+                )
+
+                await session.execute(update(DraftMarketData).where(
+                    DraftMarketData.player_id == center_identity.id,
+                    DraftMarketData.season == "2026-27",
+                    DraftMarketData.source == "fantrax",
+                ).values(last_updated=datetime.now(timezone.utc) - timedelta(days=3)))
+                await session.commit()
+                stale_result = await calculate_draft_utility(session, request)
+                stale_availability = next(
+                    player for player in stale_result.player_availability
+                    if player.player_identity_id == center_identity.id
+                )
+                assert stale_availability.adp is None
+                assert stale_availability.data_freshness == "stale"
+                assert stale_availability.next_pick_survival_probability is None
+                assert stale_availability.draft_now is None
+                assert stale_availability.blocker == "ADP data is stale"
         finally:
             async with session_factory() as session:
                 async with session.begin():
+                    await session.execute(delete(DraftMarketData).where(DraftMarketData.player_id.in_([identity.id for identity in identities]), DraftMarketData.season == "2026-27"))
                     await session.execute(delete(DraftPlayerMetric).where(DraftPlayerMetric.league_key == league_key))
                     await session.execute(delete(LeaguePlayer).where(LeaguePlayer.league_key == league_key))
                     await session.execute(delete(NbaPlayerSeasonStats).where(NbaPlayerSeasonStats.nba_player_id.in_(nba_ids)))
