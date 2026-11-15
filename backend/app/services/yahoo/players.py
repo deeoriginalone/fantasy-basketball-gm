@@ -7,6 +7,47 @@ from app.services.yahoo.client import YahooFantasyClient
 from app.services.yahoo.normalization import extract_yahoo_records
 
 MAX_PLAYER_PAGES = 200
+# Per-player roster sub-resources that Yahoo returns beside the player metadata list.
+ROSTER_PLAYER_SUBRESOURCES = ("selected_position", "starting_status")
+
+
+def _merge_fragments(value: object) -> object:
+    """Yahoo JSON encodes small sub-resources as lists of single-key fragments."""
+    if not isinstance(value, list):
+        return value
+    merged: dict = {}
+    for fragment in value:
+        if isinstance(fragment, dict):
+            merged.update(fragment)
+    return merged
+
+
+def extract_roster_player_records(payload: dict) -> list[dict]:
+    """Extract roster players while keeping their per-player roster sub-resources.
+
+    Yahoo returns a roster player as ``[[metadata fragments...], {"selected_position": [...]}]``.
+    The generic record extractor keeps only the metadata list, which silently dropped the
+    persisted slot assignment, so the sibling sub-resources are attached here.
+    """
+    records: dict[str, dict] = {}
+    for player_value in _named_values(payload, "player"):
+        found = extract_yahoo_records({"player": player_value}, "player", "player_key")
+        siblings: dict[str, object] = {}
+        if isinstance(player_value, list):
+            for item in player_value:
+                if isinstance(item, dict) and "player_key" not in item:
+                    for key in ROSTER_PLAYER_SUBRESOURCES:
+                        if key in item:
+                            siblings[key] = item[key]
+        for record in found:
+            merged = dict(record)
+            for key, value in siblings.items():
+                merged.setdefault(key, value)
+            for key in ROSTER_PLAYER_SUBRESOURCES:
+                if key in merged:
+                    merged[key] = _merge_fragments(merged[key])
+            records[str(merged["player_key"])] = merged
+    return list(records.values())
 
 
 def _named_values(value: object, name: str) -> list[object]:
@@ -113,7 +154,7 @@ async def fetch_league_rosters(
             for roster_resource in roster_resources
             for count in [_require_collection(roster_resource, "players")]
         ]
-        players = extract_yahoo_records(payload, "player", "player_key")
+        players = extract_roster_player_records(payload)
         if sum(advertised_counts) == 0 and players:
             raise HTTPException(status_code=502, detail="Yahoo roster count did not match its player records")
         if sum(advertised_counts) > 0 and not players:

@@ -1,10 +1,10 @@
 import asyncio
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -20,6 +20,7 @@ from app.features.nba.models import (
 )
 from app.features.players.models import PlayerIdentity
 from app.main import app
+from app.services.nba.game_logs import import_game_logs
 from app.services.nba.importer import import_nba_data
 from schema_support import create_test_schema
 
@@ -260,6 +261,143 @@ def test_nba_import_is_idempotent_and_preserves_yahoo_identity() -> None:
                     await session.execute(delete(NbaPlayer).where(NbaPlayer.nba_player_id.in_([player_one_id, player_two_id, player_three_id, log_only_player_id])))
                     await session.execute(delete(NbaTeam).where(NbaTeam.nba_team_id.in_([team_one_id, team_two_id])))
                     await session.execute(delete(PlayerIdentity).where(PlayerIdentity.yahoo_player_id.in_(yahoo_ids)))
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="Set TEST_DATABASE_URL to an isolated PostgreSQL test database")
+def test_game_log_import_batches_past_postgres_parameter_limit() -> None:
+    """A 30-day league log exceeds 4,095 rows; one 8-column INSERT would pass PostgreSQL's 32,767 parameters."""
+    assert TEST_DATABASE_URL
+    suffix = uuid4().hex[:8]
+    home_id, away_id = f"home-{suffix}", f"away-{suffix}"
+    game_ids = [f"g-{suffix}-{index}" for index in range(64)]
+    player_ids = [f"p-{suffix}-{index}" for index in range(65)]
+    records = [
+        {"PLAYER_ID": player_id, "PLAYER_NAME": f"Player {player_id}", "GAME_ID": game_id, "GAME_DATE": "2026-11-01",
+         "TEAM_ID": home_id, "PTS": 10, "REB": 4, "SEASON_TYPE": "Regular Season"}
+        for player_id in player_ids for game_id in game_ids
+    ]
+    assert len(records) * 8 > 32_767
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def scenario() -> None:
+        async with engine.begin() as connection:
+            await create_test_schema(connection)
+        try:
+            async with session_factory() as session:
+                async with session.begin():
+                    session.add_all([
+                        NbaTeam(nba_team_id=home_id, abbreviation=f"H{suffix}", full_name="Home Fixture", source_payload={}),
+                        NbaTeam(nba_team_id=away_id, abbreviation=f"A{suffix}", full_name="Away Fixture", source_payload={}),
+                    ])
+                    await session.flush()
+                    session.add_all([
+                        NbaGame(game_id=game_id, season="2026-27", game_date=date(2026, 11, 1), game_status="Final",
+                            home_team_id=home_id, away_team_id=away_id, source_payload={})
+                        for game_id in game_ids
+                    ])
+                async with session.begin():
+                    imported, players_added = await import_game_logs(session, "2026-27", records)
+                async with session.begin():
+                    reimported, players_added_again = await import_game_logs(session, "2026-27", records)
+                persisted = await session.scalar(
+                    select(func.count()).select_from(PlayerGameLog).where(PlayerGameLog.game_id.in_(game_ids))
+                )
+                assert imported == reimported == persisted == len(records) == 4160
+                assert players_added == len(player_ids)
+                assert players_added_again == 0
+        finally:
+            async with session_factory() as session:
+                async with session.begin():
+                    await session.execute(delete(PlayerGameLog).where(PlayerGameLog.game_id.in_(game_ids)))
+                    await session.execute(delete(NbaPlayer).where(NbaPlayer.nba_player_id.in_(player_ids)))
+                    await session.execute(delete(NbaGame).where(NbaGame.game_id.in_(game_ids)))
+                    await session.execute(delete(NbaTeam).where(NbaTeam.nba_team_id.in_([home_id, away_id])))
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not TEST_DATABASE_URL, reason="Set TEST_DATABASE_URL to an isolated PostgreSQL test database")
+def test_full_nba_import_over_parameter_limit_commits_every_row_with_current_timestamps() -> None:
+    """The complete import (teams, players, schedule, >4,095 logs, stats) commits in one transaction,
+    re-imports idempotently, omits nothing and never sends a statement over 32,767 parameters."""
+    assert TEST_DATABASE_URL
+    suffix = uuid4().hex[:8]
+    season, as_of = "2391-92", date(2391, 12, 1)
+    home_id, away_id = f"fh-{suffix}", f"fa-{suffix}"
+    game_ids = [f"fg-{suffix}-{index}" for index in range(64)]
+    player_ids = [f"fp-{suffix}-{index}" for index in range(65)]
+
+    class LargeSource:
+        def fetch_teams(self):
+            return [{"id": home_id, "abbreviation": f"H{suffix[:6]}", "full_name": "Fixture Home"},
+                {"id": away_id, "abbreviation": f"A{suffix[:6]}", "full_name": "Fixture Away"}]
+
+        def fetch_players(self, requested):
+            return [{"PERSON_ID": pid, "DISPLAY_FIRST_LAST": f"Player {pid}", "TEAM_ID": home_id,
+                "TEAM_ABBREVIATION": f"H{suffix[:6]}", "ROSTERSTATUS": 1} for pid in player_ids]
+
+        def fetch_schedule(self, requested):
+            return [{"gameId": game_id, "gameDateEst": f"{(as_of - timedelta(days=index % 20)).isoformat()}T00:00:00Z",
+                "gameStatusText": "Final", "homeTeam_teamId": home_id, "awayTeam_teamId": away_id}
+                for index, game_id in enumerate(game_ids)] + [{"gameId": f"fg-{suffix}-next", "gameStatusText": "Scheduled",
+                "gameDateEst": f"{(as_of + timedelta(days=1)).isoformat()}T00:00:00Z", "homeTeam_teamId": home_id,
+                "awayTeam_teamId": away_id}]
+
+        def fetch_recent_game_logs(self, requested, start, end):
+            return [{"PLAYER_ID": pid, "PLAYER_NAME": f"Player {pid}", "GAME_ID": game_id,
+                "GAME_DATE": (as_of - timedelta(days=index % 20)).isoformat(), "TEAM_ID": home_id, "PTS": 10,
+                "SEASON_TYPE": "Regular Season"} for pid in player_ids for index, game_id in enumerate(game_ids)]
+
+        def fetch_player_season_stats(self, requested, season_type):
+            if requested != season or season_type != "Regular Season":
+                return []
+            return [{"nba_player_id": pid, "player_name": f"Player {pid}", "team_id": home_id, "games_played": 20,
+                "games_started": 10, "base_stats": {"PTS": 10}, "advanced_stats": {}, "source_payload": {}} for pid in player_ids]
+
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    largest: list[int] = [0]
+
+    def measure(connection, cursor, statement, parameters, context, executemany):
+        count = len(parameters) if isinstance(parameters, (list, tuple, dict)) else 0
+        largest[0] = max(largest[0], count)
+
+    async def stamped(session, model, stamp, *conditions):
+        return await session.scalar(select(func.count()).select_from(model).where(model.imported_at == stamp, *conditions))
+
+    async def scenario() -> None:
+        async with engine.begin() as connection:
+            await create_test_schema(connection)
+        event.listen(engine.sync_engine, "before_cursor_execute", measure)
+        try:
+            async with session_factory() as session:
+                first = await import_nba_data(session, season, 30, LargeSource(), as_of)
+            async with session_factory() as session:
+                second = await import_nba_data(session, season, 30, LargeSource(), as_of)
+            assert first.game_logs_imported == second.game_logs_imported == 64 * 65 > 4095
+            assert first.imported_at < second.imported_at
+            assert datetime.now(timezone.utc) - second.imported_at < timedelta(minutes=5)
+            assert first.latest_game_date == as_of
+            async with session_factory() as session:
+                logs = await session.scalar(select(func.count()).select_from(PlayerGameLog).where(PlayerGameLog.game_id.like(f"fg-{suffix}-%")))
+                assert logs == 64 * 65, "repeated imports neither duplicate nor omit logs"
+                assert await stamped(session, PlayerGameLog, second.imported_at, PlayerGameLog.game_id.like(f"fg-{suffix}-%")) == logs
+                assert await stamped(session, NbaPlayerSeasonStats, second.imported_at, NbaPlayerSeasonStats.season == season) == 65
+                # Rebuilt from games on or after as_of: four logged games dated as_of plus the next game.
+                assert await stamped(session, PlayerSchedule, second.imported_at, PlayerSchedule.season == season) == second.player_schedule_entries == 65 * 5
+                assert await stamped(session, NbaGame, second.imported_at, NbaGame.season == season) == 65
+            assert 0 < largest[0] <= 32_767
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", measure)
+            async with session_factory() as session, session.begin():
+                await session.execute(delete(NbaPlayer).where(NbaPlayer.nba_player_id.in_(player_ids)))
+                await session.execute(delete(NbaGame).where(NbaGame.game_id.like(f"fg-{suffix}-%")))
+                await session.execute(delete(NbaTeam).where(NbaTeam.nba_team_id.in_([home_id, away_id])))
             await engine.dispose()
 
     asyncio.run(scenario())

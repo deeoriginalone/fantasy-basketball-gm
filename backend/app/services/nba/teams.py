@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import batched
 from app.features.nba.models import NbaTeam
 
 
@@ -52,13 +53,14 @@ async def import_teams(
         raise HTTPException(status_code=502, detail="nba_api returned no teams")
 
     rows = list(teams_by_id.values())
-    statement = insert(NbaTeam).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[NbaTeam.nba_team_id],
-        set_={key: getattr(statement.excluded, key) for key in (
-            "abbreviation", "full_name", "city", "nickname", "state", "year_founded", "source_payload", "imported_at"
-        )},
-    )
-    await session.execute(statement)
+    for batch in batched(rows):
+        statement = insert(NbaTeam).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[NbaTeam.nba_team_id],
+            set_={key: getattr(statement.excluded, key) for key in (
+                "abbreviation", "full_name", "city", "nickname", "state", "year_founded", "source_payload", "imported_at"
+            )},
+        )
+        await session.execute(statement)
     await session.flush()
     return len(rows)

@@ -272,3 +272,121 @@ def test_player_identity_create_update_deduplicate_and_roster_persistence(monkey
         await engine.dispose()
 
     asyncio.run(scenario())
+
+
+def test_default_import_skips_local_mock_practice_leagues(monkeypatch) -> None:
+    """Without league_key, local practice pseudo-leagues (key prefix, game key or practice marker) are
+    never sent to Yahoo, cannot roll back the real league, and naming one is a client error."""
+    assert TEST_DATABASE_URL
+    database_url = TEST_DATABASE_URL
+    suffix = uuid4().hex[:12]
+    league_key = f"nba.test.{suffix}"
+    team_key, second_team_key = f"{league_key}.t.1", f"{league_key}.t.2"
+    practice_key = f"yahoo-mock-practice.{suffix}"
+    game_key_practice = f"practice-by-game.{suffix}"
+    marker_practice = f"practice-by-marker.{suffix}"
+    practice_keys = (practice_key, game_key_practice, marker_practice)
+    yahoo_id = f"test-{suffix}-rostered"
+    second_yahoo_id = f"test-{suffix}-second"
+    pool_yahoo_id = f"test-{suffix}-practice-pool"
+    requested: list[str] = []
+
+    class FixtureYahooClient:
+        async def get_json(self, path: str, access_token: str) -> dict:
+            requested.append(path)
+            if any(key in path for key in practice_keys):
+                # What Yahoo does with a key that is not a Yahoo league.
+                raise HTTPException(status_code=502, detail="Yahoo Fantasy API rejected the league request")
+            if path == f"league/{league_key}/players;start=0;count=25":
+                return {"fantasy_content": {"league": [{"players": {
+                    "0": {"player": _player_fragments(yahoo_id, "Injured Center", "O")},
+                    "1": {"player": _player_fragments(second_yahoo_id, "Bench Guard")},
+                }}]}}
+            if path == f"team/{team_key}/roster":
+                return {"fantasy_content": {"team": [{"roster": {"0": {"players": {"0": {"player": [
+                    _player_fragments(yahoo_id, "Injured Center", "O"),
+                    {"selected_position": [{"coverage_type": "date", "date": "2026-11-13"}, {"position": "IL"}, {"is_flex": 0}]},
+                ]}}}}}]}}
+            if path == f"team/{second_team_key}/roster":
+                return {"fantasy_content": {"team": [{"roster": {"0": {"players": {"0": {"player": [
+                    _player_fragments(second_yahoo_id, "Bench Guard"),
+                    {"selected_position": [{"coverage_type": "date", "date": "2026-11-13"}, {"position": "BN"}]},
+                ]}}}}}]}}
+            # Any other persisted real test league: a valid empty Yahoo collection.
+            if path.startswith("league/"):
+                return {"fantasy_content": {"league": [{"players": []}]}}
+            return {"fantasy_content": {"team": [{"roster": {"coverage_type": "week", "players": {"count": 0}}}]}}
+
+    async def fixture_access_token(self, session) -> str:
+        return "postgres-test-token"
+
+    monkeypatch.setattr(YahooAuthService, "access_token", fixture_access_token)
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings(database_url=database_url)
+
+    async def scenario() -> None:
+        async with engine.begin() as connection:
+            await create_test_schema(connection)
+        try:
+            async with session_factory() as session:
+                async with session.begin():
+                    pool_identity = PlayerIdentity(yahoo_player_id=pool_yahoo_id, player_name="Practice Pool Player")
+                    session.add_all([
+                        League(league_key=league_key, game_key="nba_test", league_name="Real Test League",
+                            season=2026, source_payload={"league_key": league_key}),
+                        League(league_key=practice_key, game_key="yahoo_mock_practice", season=2026,
+                            league_name="Yahoo Mock Practice - disposable", source_payload={"source_league_key": league_key}),
+                        League(league_key=game_key_practice, game_key="yahoo_mock_practice", season=2026,
+                            league_name="Practice by game key", source_payload={}),
+                        League(league_key=marker_practice, game_key="nba_test", season=2026,
+                            league_name="Practice by marker", source_payload={"practice_source": "fixture"}),
+                        pool_identity,
+                    ])
+                    await session.flush()
+                    session.add_all([
+                        Team(team_key=team_key, league_key=league_key, team_name="Box Score Bully",
+                            source_payload={"team_key": team_key}),
+                        Team(team_key=second_team_key, league_key=league_key, team_name="Rival",
+                            source_payload={"team_key": second_team_key}),
+                        Team(team_key=f"{practice_key}.slot.1", league_key=practice_key, team_name="Box Score Bully",
+                            source_payload={"mock_slot": 1}),
+                        LeaguePlayer(league_key=practice_key, yahoo_player_id=pool_yahoo_id,
+                            player_identity_id=pool_identity.id, source_payload={"copied": True}),
+                    ])
+
+                result = await import_yahoo_players(session, settings, None, FixtureYahooClient())
+                rosters = {row.team_key: row for row in (await session.scalars(
+                    select(RosterEntry).where(RosterEntry.league_key == league_key))).all()}
+                assert not [path for path in requested if any(key in path for key in practice_keys)]
+                assert {f"team/{team_key}/roster", f"team/{second_team_key}/roster"} <= set(requested)
+                assert result.league_count >= 1 and result.imported_at is not None
+                assert set(rosters) == {team_key, second_team_key}, "every real team roster is imported"
+                assert rosters[team_key].roster_position == "IL" and rosters[second_team_key].roster_position == "BN"
+                assert await session.scalar(select(func.count()).select_from(FantasyTeam).where(
+                    FantasyTeam.league_key == league_key, FantasyTeam.imported_at == result.imported_at)) == 2
+                assert await session.scalar(
+                    select(func.count()).select_from(LeaguePlayer).where(LeaguePlayer.league_key == practice_key)
+                ) == 1, "the practice league's copied pool is untouched"
+
+                for key in practice_keys:
+                    with pytest.raises(HTTPException) as practice_error:
+                        await import_yahoo_players(session, settings, key, FixtureYahooClient())
+                    assert practice_error.value.status_code == 422
+                    assert "practice" in practice_error.value.detail.lower()
+                assert not [path for path in requested if any(key in path for key in practice_keys)]
+        finally:
+            async with session_factory() as session:
+                async with session.begin():
+                    for key in (league_key, *practice_keys):
+                        await session.execute(delete(RosterEntry).where(RosterEntry.league_key == key))
+                        await session.execute(delete(LeaguePlayer).where(LeaguePlayer.league_key == key))
+                        await session.execute(delete(FantasyTeam).where(FantasyTeam.league_key == key))
+                        await session.execute(delete(Team).where(Team.league_key == key))
+                    await session.execute(delete(PlayerIdentity).where(
+                        PlayerIdentity.yahoo_player_id.in_([yahoo_id, second_yahoo_id, pool_yahoo_id])))
+                    for key in (league_key, *practice_keys):
+                        await session.execute(delete(League).where(League.league_key == key))
+        await engine.dispose()
+
+    asyncio.run(scenario())

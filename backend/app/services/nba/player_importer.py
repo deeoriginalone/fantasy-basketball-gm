@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import batched
 from app.features.nba.models import NbaPlayer, NbaTeam
 from app.features.players.models import PlayerIdentity
 
@@ -117,14 +118,15 @@ async def import_players(
             player["team_id"] = None
 
     rows = list(players_by_id.values())
-    statement = insert(NbaPlayer).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[NbaPlayer.nba_player_id],
-        set_={key: getattr(statement.excluded, key) for key in (
-            "player_name", "team_id", "team_abbreviation", "roster_status", "from_year", "to_year", "source_payload", "imported_at"
-        )},
-    )
-    await session.execute(statement)
+    for batch in batched(rows):
+        statement = insert(NbaPlayer).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[NbaPlayer.nba_player_id],
+            set_={key: getattr(statement.excluded, key) for key in (
+                "player_name", "team_id", "team_abbreviation", "roster_status", "from_year", "to_year", "source_payload", "imported_at"
+            )},
+        )
+        await session.execute(statement)
     await session.flush()
     mappings_added = await link_player_identities(session)
     return len(players_by_id), mappings_added

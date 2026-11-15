@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.core.database import engine, initialize_schema
+from app.core.timing import RequestTimingMiddleware
 from app.features.draft.router import router as draft_router
 from app.features.draft.router import v2_router as draft_v2_router
 from app.features.draft.browser_observer import router as browser_observer_router
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Fantasy Basketball GM API", version="0.1.0", lifespan=lifespan)
+# Refresh progress is polled; only its POST is timed and logged.
+app.add_middleware(RequestTimingMiddleware, untimed_paths=("/api/v1/waivers/refresh",))
 app.include_router(yahoo_router)
 app.include_router(draft_router)
 app.include_router(draft_v2_router)

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import batched
 from app.features.nba.models import NbaPlayer, NbaPlayerSeasonStats, NbaTeam
 
 
@@ -77,9 +78,10 @@ async def import_player_season_stats(
             },
         })
     if supplemental_players:
-        statement = insert(NbaPlayer).values(supplemental_players)
-        statement = statement.on_conflict_do_nothing(index_elements=[NbaPlayer.nba_player_id])
-        await session.execute(statement)
+        for batch in batched(supplemental_players):
+            statement = insert(NbaPlayer).values(batch)
+            statement = statement.on_conflict_do_nothing(index_elements=[NbaPlayer.nba_player_id])
+            await session.execute(statement)
         await session.flush()
 
     rows = []
@@ -98,17 +100,18 @@ async def import_player_season_stats(
             "advanced_stats": record.get("advanced_stats") or {},
             "source_payload": record.get("source_payload") or record,
         })
-    statement = insert(NbaPlayerSeasonStats).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[
-            NbaPlayerSeasonStats.nba_player_id,
-            NbaPlayerSeasonStats.season,
-            NbaPlayerSeasonStats.season_type,
-        ],
-        set_={key: getattr(statement.excluded, key) for key in (
-            "games_played", "games_started", "minutes_per_game", "usage_pct", "base_stats", "advanced_stats", "source_payload", "imported_at"
-        )},
-    )
-    await session.execute(statement)
+    for batch in batched(rows):
+        statement = insert(NbaPlayerSeasonStats).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[
+                NbaPlayerSeasonStats.nba_player_id,
+                NbaPlayerSeasonStats.season,
+                NbaPlayerSeasonStats.season_type,
+            ],
+            set_={key: getattr(statement.excluded, key) for key in (
+                "games_played", "games_started", "minutes_per_game", "usage_pct", "base_stats", "advanced_stats", "source_payload", "imported_at"
+            )},
+        )
+        await session.execute(statement)
     await session.flush()
     return len(rows)

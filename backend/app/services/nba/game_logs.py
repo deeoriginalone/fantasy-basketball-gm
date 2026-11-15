@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.nba.models import NbaGame, NbaPlayer, NbaTeam, PlayerGameLog
+from app.core.database import batched
 
 
 def _text(value: Any) -> str | None:
@@ -113,9 +114,10 @@ async def import_game_logs(
         supplemental_players[player_id] = player
 
     if supplemental_players:
-        statement = insert(NbaPlayer).values(list(supplemental_players.values()))
-        statement = statement.on_conflict_do_nothing(index_elements=[NbaPlayer.nba_player_id])
-        await session.execute(statement)
+        for batch in batched(list(supplemental_players.values())):
+            statement = insert(NbaPlayer).values(batch)
+            statement = statement.on_conflict_do_nothing(index_elements=[NbaPlayer.nba_player_id])
+            await session.execute(statement)
         await session.flush()
 
     player_ids = set((await session.scalars(select(NbaPlayer.nba_player_id))).all())
@@ -128,13 +130,15 @@ async def import_game_logs(
     for row in rows:
         if row["team_id"] not in team_ids:
             row["team_id"] = None
-    statement = insert(PlayerGameLog).values(rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[PlayerGameLog.nba_player_id, PlayerGameLog.game_id],
-        set_={key: getattr(statement.excluded, key) for key in (
-            "season", "season_type", "game_date", "team_id", "stats_payload", "source_payload", "imported_at"
-        )},
-    )
-    await session.execute(statement)
+    # Batched: one multi-row INSERT over ~4,095 logs exceeds PostgreSQL's 32,767 bind-parameter limit.
+    for batch in batched(rows):
+        statement = insert(PlayerGameLog).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[PlayerGameLog.nba_player_id, PlayerGameLog.game_id],
+            set_={key: getattr(statement.excluded, key) for key in (
+                "season", "season_type", "game_date", "team_id", "stats_payload", "source_payload", "imported_at"
+            )},
+        )
+        await session.execute(statement)
     await session.flush()
     return len(rows), len(supplemental_players)

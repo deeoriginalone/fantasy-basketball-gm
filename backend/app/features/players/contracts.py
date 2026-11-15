@@ -53,3 +53,5 @@ class PlayerImportResult(BaseModel):
     unchanged_count: int
     roster_entry_count: int
     changes: list[PlayerChange]
+    # Stamped on every replaced pool and roster row; verification compares persisted rows to it.
+    imported_at: datetime | None = None

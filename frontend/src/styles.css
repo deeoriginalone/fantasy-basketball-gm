@@ -538,9 +538,9 @@ h1, h2, p { margin-top: 0; }
 .yahoo-player-status { display: grid; gap: .2rem; margin: .6rem 0; font-size: .7rem; line-height: 1.4; }
 .yahoo-player-status.status-excluded { border-left: 3px solid var(--coral); padding-left: .5rem; }
 .yahoo-player-status.status-uncertain { border-left: 3px solid var(--blue); padding-left: .5rem; }
-.waiver-center { max-width: 1440px; margin: 0 auto; padding: 24px; min-width: 0; }
+.waiver-center { max-width: 1240px; margin: 0 auto; padding: 24px; min-width: 0; }
 .waiver-heading, .waiver-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; justify-content: space-between; }
-.waiver-controls { justify-content: flex-start; margin: 24px 0; }
+.waiver-controls { justify-content: flex-start; margin: 12px 0 16px; }
 .waiver-controls .field { min-width: 220px; }
 .waiver-controls select { width: 100%; padding: 10px; }
 .waiver-controls fieldset { display: flex; gap: 20px; padding: 12px; border: 1px solid var(--line, #445064); border-radius: 8px; }
@@ -554,7 +554,7 @@ h1, h2, p { margin-top: 0; }
 .waiver-panel h2 { margin-top: 0; }
 .waiver-panel p, .waiver-dialog p, .waiver-evidence dd { line-height: 1.6; }
 .waiver-table-scroll { max-width: 100%; overflow-x: auto; }
-.waiver-table { width: 100%; min-width: 1060px; border-collapse: collapse; text-align: left; }
+.waiver-table { width: 100%; min-width: 1180px; border-collapse: collapse; text-align: left; }
 .waiver-table caption { text-align: left; padding: 12px 0; }
 .waiver-table th, .waiver-table td { padding: 12px 10px; border-bottom: 1px solid var(--line, #445064); vertical-align: top; }
 .waiver-table small { display: block; margin-top: 6px; font-weight: 400; }
@@ -575,8 +575,8 @@ h1, h2, p { margin-top: 0; }
 .waiver-replacement-list { display: grid; gap: 16px; }
 .waiver-replacement-card { padding: 18px; border: 1px solid var(--line, #445064); border-radius: 8px; }
 .waiver-replacement-card > header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 8px; }
-.waiver-replacement-card h3 { margin: 0 0 8px; }
-.waiver-replacement-card h4 { margin-bottom: 6px; }
+.waiver-replacement-card h4 { margin: 0 0 8px; }
+.waiver-replacement-card h5 { margin-bottom: 6px; }
 .waiver-kicker { margin: 0 0 5px; font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .waiver-decision { border: 1px solid var(--line, #445064); border-radius: 999px; padding: 5px 10px; font-size: .8rem; text-transform: capitalize; }
 .waiver-decision.is-review_replacement { border-color: var(--forest, #377d65); }
@@ -598,7 +598,161 @@ h1, h2, p { margin-top: 0; }
 .waiver-dialog::backdrop { background: #000a; }
 .waiver-close { position: sticky; top: 0; z-index: 1; }
 .waiver-center :focus-visible, .waiver-dialog :focus-visible { outline: 3px solid var(--forest); outline-offset: 3px; }
+.waiver-action { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 4px 10px; font-size: .78rem; font-weight: 800; letter-spacing: .03em; white-space: nowrap; }
+.waiver-action.is-add_only, .waiver-action.is-move_to_il_then_add, .waiver-action.is-add_drop { color: #174b38; background: #d8f1e4; }
+.waiver-action.is-watch { color: #4d4000; background: #fff1ae; }
+.waiver-action.is-hold { color: #23313a; background: #e3e9ee; }
+.waiver-action.is-insufficient_evidence { color: #5e2800; background: #ffe1b4; }
+.waiver-action-label { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 1.05rem; }
+.waiver-capacity { padding: 10px 12px; border-left: 4px solid var(--forest, #377d65); overflow-wrap: anywhere; }
+.waiver-capacity.is-stale, .waiver-capacity.is-missing, .waiver-capacity.is-conflicting { border-color: #dc8989; }
+.waiver-capacity.is-partial { border-color: #e8b34c; }
+.waiver-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 12px; margin: 16px 0; }
+.waiver-stat-grid > div { padding: 12px; border: 1px solid var(--line, #445064); border-radius: 8px; min-width: 0; }
+.waiver-stat-grid dt { font-size: .85rem; }
+.waiver-stat-grid dd { margin: 4px 0 0; font-size: 1.2rem; font-weight: 700; overflow-wrap: anywhere; }
+.waiver-blockers li, .waiver-need-list li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.waiver-blocker-box { margin: 0 0 14px; padding: 12px 14px; border: 1px solid #f0c8c0; border-left: 4px solid #dc8989; border-radius: 4px; color: #7f342b; background: #fff4f0; line-height: 1.5; overflow-wrap: anywhere; }
+.waiver-blocker-box p { margin: 0 0 8px; }
+.waiver-blocker-box ul { margin: 0; padding-left: 1.2rem; }
+.waiver-steps { padding-left: 1.4rem; line-height: 1.6; }
+.waiver-option-list { display: grid; gap: 10px; margin: 0 0 16px; padding: 0; list-style: none; }
+.waiver-option-list li { padding: 12px; border: 1px solid var(--line, #445064); border-radius: 8px; line-height: 1.6; overflow-wrap: anywhere; }
+.waiver-intro { max-width: 110ch; margin: 8px 0 0; }
+.waiver-team { margin: 4px 0 0; font-size: 1.1rem; font-weight: 700; }
+.waiver-panel p { max-width: 90ch; }
+.waiver-headline { margin: 0 0 6px; font-size: 1.35rem; font-weight: 800; letter-spacing: .02em; color: var(--forest); }
+.waiver-headline.is-undetermined { color: #7f342b; }
+.waiver-headline.is-add_drop { color: #5e2800; }
+.waiver-short-reason { margin: 0 0 8px; }
+.waiver-situation .waiver-stat-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 104px), 1fr)); gap: 6px; margin: 12px 0 0; }
+.waiver-situation .waiver-stat-grid > div { padding: 6px 7px; }
+.waiver-situation .waiver-stat-grid dt { font-size: .78rem; }
+.waiver-situation .waiver-stat-grid dd { margin-top: 2px; font-size: 1rem; }
+.waiver-situation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 28px; }
+.waiver-situation-grid .waiver-subhead { margin-top: 0; }
+.waiver-controls .waiver-window-note { flex: 1 1 320px; margin: 0; }
+.waiver-subhead { margin: 14px 0 8px; font-size: 1rem; }
+.waiver-need-summary { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.waiver-need-summary li { line-height: 1.5; overflow-wrap: anywhere; }
+.waiver-need-summary li > strong { margin-right: 4px; }
+.waiver-need-level { display: inline-block; min-width: 5.6rem; margin-right: 8px; border-radius: 999px; padding: 2px 8px; font-size: .75rem; font-weight: 800; letter-spacing: .04em; text-align: center; }
+.waiver-need-level.is-high { color: #7f342b; background: #ffe0d8; }
+.waiver-need-level.is-medium { color: #4d4000; background: #fff1ae; }
+.waiver-need-level.is-covered { color: #174b38; background: #d8f1e4; }
+.waiver-basis, .waiver-depth { margin: 8px 0 0; font-size: .92rem; }
+.waiver-freshness-title { margin: 12px 0 4px; }
+.waiver-freshness ul { display: grid; justify-items: start; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.waiver-freshness li { border: 1px solid var(--line, #445064); border-radius: 8px; padding: 3px 10px; font-size: .84rem; line-height: 1.45; }
+.waiver-freshness li.is-stale, .waiver-freshness li.is-partial { border-color: #e8b34c; background: #fff8e1; }
+.waiver-freshness li.is-missing { border-color: #dc8989; background: #fff4f0; }
+.waiver-details { margin-top: 10px; }
+.waiver-details > summary, .waiver-full-list > summary, .waiver-advanced > summary { cursor: pointer; font-weight: 700; }
+.waiver-best { border: 2px solid var(--forest, #377d65); }
+.waiver-move-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+.waiver-move-card { min-width: 0; padding: 18px; border: 2px solid var(--forest, #377d65); border-radius: 10px; background: var(--paper, #fff); }
+.waiver-move-card.is-measured { border-color: var(--blue, #417a9e); }
+.waiver-move-card header { display: grid; justify-items: start; gap: 6px; margin-bottom: 10px; }
+.waiver-move-player { margin: 0; font-size: 1.6rem; line-height: 1.2; overflow-wrap: anywhere; }
+.waiver-move-meta, .waiver-move-drop { margin: 0; overflow-wrap: anywhere; }
+.waiver-move-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 8px 0; }
+.waiver-move-facts dt { color: var(--muted, #687570); font-size: .78rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.waiver-move-facts dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.waiver-intent { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 4px 10px; font-size: .74rem; font-weight: 800; letter-spacing: .03em; white-space: nowrap; }
+.waiver-intent.is-stream, .waiver-intent.is-two_week_stream { color: #12406b; background: #dceafa; }
+.waiver-intent.is-longer_term_add { color: #3d2a6e; background: #e9e1fb; }
+.waiver-form-line { margin: 6px 0; font-size: .9rem; overflow-wrap: anywhere; }
+.waiver-form-panel, .waiver-roster-decision { min-width: 0; margin: 12px 0; padding: 12px; border: 1px solid var(--line, #d9e0dc); border-radius: 8px; }
+.waiver-form-panel h3, .waiver-roster-decision h3 { margin: 10px 0 6px; font-size: .9rem; letter-spacing: .05em; }
+.waiver-form-panel h3:first-child, .waiver-roster-decision h3:first-child { margin-top: 0; }
+.waiver-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px 16px; margin: 6px 0; min-width: 0; }
+.waiver-form-grid > div { min-width: 0; }
+.waiver-form-grid dt { color: var(--muted, #687570); font-size: .76rem; font-weight: 800; letter-spacing: .04em; }
+.waiver-form-grid dd { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.waiver-form-grid dd small { display: block; font-weight: 500; color: var(--muted, #687570); }
+.waiver-form-limits { margin: 8px 0 0; padding-left: 18px; font-size: .82rem; color: var(--muted, #687570); }
+.waiver-move-card h4 { margin: 12px 0 4px; }
+.waiver-move-card ul { margin: 0; padding-left: 1.2rem; line-height: 1.5; }
+.waiver-not-supported { margin: 12px 0; padding: 10px 12px; border-left: 4px solid #e8b34c; border-radius: 4px; background: #fff8e1; }
+.waiver-not-supported p { margin: 0 0 6px; }
+.waiver-user-action { margin: 10px 0; font-weight: 800; letter-spacing: .04em; }
+.waiver-strict-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.waiver-panel p.waiver-strict-status { max-width: none; }
+.waiver-strict-status > .waiver-strict-text { flex: 1 1 24rem; }
+.waiver-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 14px; }
+.waiver-section-head h2, .waiver-panel .waiver-section-head p { margin: 0; }
+.waiver-no-move { padding: 12px 14px; border-left: 4px solid #dc8989; }
+.waiver-action.is-best_measured_option { color: #0f3a55; background: #dceefa; }
+.waiver-action.is-measured, .waiver-action.is-unavailable { color: #23313a; background: #e3e9ee; }
+.waiver-availability { display: inline-block; border-radius: 999px; padding: 3px 9px; font-size: .74rem; font-weight: 800; letter-spacing: .03em; }
+.waiver-availability.is-confirmed { color: #174b38; background: #d8f1e4; }
+.waiver-availability.is-unverified { color: #5e2800; background: #ffe1b4; }
+.waiver-option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; margin: 0 0 16px; padding: 0; list-style: none; }
+.waiver-option-card { min-width: 0; padding: 14px; border: 1px solid var(--line, #445064); border-radius: 8px; }
+.waiver-option-card h3 { margin: 0 0 8px; font-size: .9rem; letter-spacing: .05em; }
+.waiver-option p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.waiver-option-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.waiver-option-name { font-size: 1.1rem; }
+.waiver-availability-note { padding: 10px 12px; border-left: 4px solid #e8b34c; background: #fff8e1; }
+.waiver-potential-list { display: grid; gap: 10px; padding-left: 1.4rem; }
+.waiver-potential-list li { padding: 10px 12px; border: 1px solid var(--line, #445064); border-radius: 8px; }
+.waiver-potential-list p { margin: 0 0 4px; overflow-wrap: anywhere; }
+.waiver-compare.is-promoted { border: 2px solid var(--forest, #377d65); }
+.waiver-compare.is-muted { background: var(--canvas, #f2f5f0); }
+.waiver-compare.is-muted h2 { font-size: 1.15rem; }
+.waiver-compare-picker > summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+.waiver-replacements { margin-top: 16px; }
+.waiver-slot-table, .waiver-days { width: 100%; min-width: 560px; border-collapse: collapse; text-align: left; }
+.waiver-slot-table caption, .waiver-days caption { text-align: left; padding: 8px 0; }
+.waiver-slot-table th, .waiver-slot-table td, .waiver-days th, .waiver-days td { padding: 8px; border-bottom: 1px solid var(--line, #445064); vertical-align: top; }
+.waiver-refresh { margin: 0 0 14px; padding: 12px 18px; border-left: 4px solid var(--forest, #377d65); border-radius: 6px; }
+.waiver-heading { align-items: flex-start; }
+.waiver-heading > .waiver-refresh { flex: 1 1 520px; max-width: 780px; margin: 0; }
+.waiver-refresh.is-stale { border-left-color: #e8b34c; }
+.waiver-refresh.is-running { border-left-color: var(--blue, #417a9e); }
+.waiver-refresh.is-failed { border-left-color: #dc8989; }
+.waiver-refresh-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.waiver-refresh-foot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 16px; margin-top: 4px; }
+.waiver-refresh-foot > details[open] { flex-basis: 100%; }
+.waiver-refresh h2 { margin: 0; font-size: 1rem; letter-spacing: .04em; }
+.waiver-refresh p { margin: 2px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+.waiver-refresh-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.waiver-situation-more { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 24px; }
+/* Flex items default to min-width: auto; without this an open details takes its table's width and widens the page. */
+.waiver-situation-more > details { min-width: 0; }
+.waiver-situation-more > details[open] { flex-basis: 100%; }
+.waiver-refresh-details > summary { cursor: pointer; font-size: .88rem; font-weight: 700; }
+.waiver-refresh-progress { margin-top: 8px; border-radius: 6px; }
+.waiver-refresh-progress:focus { outline: none; }
+.waiver-refresh-progress:focus-visible { outline: 3px solid var(--forest); outline-offset: 3px; }
+.waiver-refresh-stages { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: .88rem; }
+.waiver-refresh-stages li { display: grid; grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr); gap: 2px 12px; padding: 4px 8px; border-left: 3px solid var(--line, #445064); overflow-wrap: anywhere; }
+.waiver-refresh-stages li.is-succeeded, .waiver-refresh-stages li.is-current { border-left-color: var(--forest, #377d65); }
+.waiver-refresh-stages li.is-running { border-left-color: var(--blue, #417a9e); background: #eef5fa; }
+.waiver-refresh-stages li.is-failed, .waiver-refresh-stages li.is-missing { border-left-color: #dc8989; background: #fff4f0; }
+.waiver-refresh-stages li.is-stale { border-left-color: #e8b34c; background: #fff8e1; }
+.waiver-refresh-stage { font-weight: 700; }
+.waiver-refresh-outcome { margin: 8px 0 0; padding-left: 1.2rem; line-height: 1.5; overflow-wrap: anywhere; }
+.waiver-refresh .waiver-refresh-error { margin-top: 8px; padding: 8px 10px; border-left: 4px solid #dc8989; color: #7f342b; background: #fff4f0; }
+.waiver-refresh .waiver-refresh-last { color: var(--muted, #687570); font-size: .85rem; }
+.waiver-failure, .waiver-contract-error { margin: 0 0 14px; padding: 12px 14px; border: 1px solid #f0c8c0; border-left: 4px solid #dc8989; border-radius: 4px; color: #7f342b; background: #fff4f0; overflow-wrap: anywhere; }
+.waiver-panel .waiver-failure p, .waiver-panel .waiver-contract-error p { margin: 0 0 6px; }
+.waiver-panel p.waiver-failure-title { font-size: 1.15rem; font-weight: 800; letter-spacing: .03em; }
+.waiver-failure-note { font-size: .9rem; }
+.waiver-failure-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.waiver-potential { margin-top: 18px; padding: 14px; border: 2px dashed #e8b34c; border-radius: 8px; background: #fffcf2; }
+.waiver-potential h3 { margin: 0 0 6px; font-size: .95rem; letter-spacing: .05em; }
+.waiver-move-card header .waiver-move-availability { margin: 0; }
+.waiver-panel p.waiver-acquisition-note { margin: 8px 0; }
+@media (max-width: 960px) {
+  .waiver-situation-grid { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 640px) {
+  .waiver-move-card { padding: 14px; }
+  .waiver-move-player { font-size: 1.35rem; }
+  .waiver-move-facts { grid-template-columns: minmax(0, 1fr); }
+  .waiver-headline { font-size: 1.15rem; }
+  .waiver-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .waiver-center { padding: 12px; }
   .waiver-panel, .waiver-dialog { padding: 16px; }
   .waiver-controls { display: grid; grid-template-columns: minmax(0, 1fr); }
@@ -610,4 +764,7 @@ h1, h2, p { margin-top: 0; }
   .waiver-samples { grid-template-columns: minmax(0, 1fr); }
   .waiver-component-list { columns: 1; }
   .waiver-heading .button { width: 100%; }
+  .waiver-refresh { padding: 12px; }
+  .waiver-refresh-actions, .waiver-failure-actions { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+  .waiver-refresh-stages li { grid-template-columns: minmax(0, 1fr); }
 }

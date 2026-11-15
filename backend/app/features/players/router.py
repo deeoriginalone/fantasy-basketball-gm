@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.provider_lock import BUSY_DETAIL, ProviderImportBusy, provider_import_lock
 from app.features.players.contracts import (
     FantasyRosterResponse,
     PlayerIdentityResponse,
@@ -25,7 +26,11 @@ async def import_players(
     league_key: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> PlayerImportResult:
-    return await import_yahoo_players(session, get_settings(), league_key)
+    try:
+        async with provider_import_lock():
+            return await import_yahoo_players(session, get_settings(), league_key)
+    except ProviderImportBusy as error:
+        raise HTTPException(status_code=409, detail=BUSY_DETAIL) from error
 
 
 @router.get("/players", response_model=list[PlayerIdentityResponse])

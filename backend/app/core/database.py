@@ -13,6 +13,14 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
 SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
+# Rows per multi-row INSERT/UPSERT: PostgreSQL rejects statements with more than 32,767 bind
+# parameters, so every bulk write is batched (500 rows stays far below the limit for our tables).
+BULK_INSERT_BATCH_SIZE = 500
+
+
+def batched(rows: list, size: int = BULK_INSERT_BATCH_SIZE):
+    for offset in range(0, len(rows), size):
+        yield rows[offset:offset + size]
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

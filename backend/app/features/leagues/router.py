@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.provider_lock import BUSY_DETAIL, ProviderImportBusy, provider_import_lock
 from app.features.leagues.contracts import LeagueImportResult, LeagueResponse, LeagueTeamResponse
 from app.features.leagues.service import get_imported_leagues, import_manager_leagues
 from app.services.yahoo.normalization import normalize_yahoo_draft_pick_time, normalize_yahoo_settings
@@ -15,7 +16,11 @@ single_league_router = APIRouter(prefix="/api/v1/league", tags=["Leagues"])
 async def import_leagues(
     session: AsyncSession = Depends(get_session),
 ) -> LeagueImportResult:
-    return await import_manager_leagues(session, get_settings())
+    try:
+        async with provider_import_lock():
+            return await import_manager_leagues(session, get_settings())
+    except ProviderImportBusy as error:
+        raise HTTPException(status_code=409, detail=BUSY_DETAIL) from error
 
 
 def _response(league) -> LeagueResponse:

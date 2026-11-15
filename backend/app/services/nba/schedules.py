@@ -6,9 +6,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import BULK_INSERT_BATCH_SIZE, batched
 from app.features.nba.models import NbaGame, NbaPlayer, NbaTeam, PlayerSchedule
-
-BULK_INSERT_BATCH_SIZE = 500
 
 
 def _text(value: Any) -> str | None:
@@ -149,14 +148,15 @@ async def import_schedule(
                 game[field] = None
 
     game_rows = list(games_by_id.values())
-    statement = insert(NbaGame).values(game_rows)
-    statement = statement.on_conflict_do_update(
-        index_elements=[NbaGame.game_id],
-        set_={key: getattr(statement.excluded, key) for key in (
-            "season", "game_date", "game_status", "home_team_id", "away_team_id", "source_payload", "imported_at"
-        )},
-    )
-    await session.execute(statement)
+    for batch in batched(game_rows):
+        statement = insert(NbaGame).values(batch)
+        statement = statement.on_conflict_do_update(
+            index_elements=[NbaGame.game_id],
+            set_={key: getattr(statement.excluded, key) for key in (
+                "season", "game_date", "game_status", "home_team_id", "away_team_id", "source_payload", "imported_at"
+            )},
+        )
+        await session.execute(statement)
     await session.flush()
     player_schedule_entries = await rebuild_player_schedule(session, season, as_of)
     return len(game_rows), player_schedule_entries, unresolved_team_references

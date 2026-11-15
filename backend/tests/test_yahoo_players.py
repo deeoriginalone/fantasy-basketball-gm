@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.features.players.normalization import normalize_yahoo_player
+from app.features.players.service import _roster_position
 from app.services.yahoo.normalization import normalize_yahoo_league
 from app.services.yahoo.players import fetch_all_league_players, fetch_league_rosters
 
@@ -196,3 +197,27 @@ def test_league_settings_parse_yahoo_scoring_and_roster_positions_verbatim() -> 
     }
     assert [position["position"] for position in normalized.roster_positions] == positions
     assert normalized.source_settings == settings_response
+
+def test_roster_keeps_yahoo_selected_position_sibling_block() -> None:
+    # Yahoo roster JSON nests player metadata in a list beside the selected_position sub-resource.
+    player = [
+        [
+            {"player_key": "nba.p.7"}, {"player_id": "7"}, {"name": {"full": "Injured Center"}},
+            {"status": "O"}, {"eligible_positions": [{"position": "C"}, {"position": "Util"}, {"position": "IL"}]},
+        ],
+        {"selected_position": [{"coverage_type": "date", "date": "2026-11-13"}, {"position": "IL"}, {"is_flex": 0}]},
+    ]
+
+    class FixtureClient:
+        async def get_json(self, path: str, access_token: str) -> dict:
+            return {"fantasy_content": {"team": [[{"team_key": "nba.l.1.t.1"}], {"roster": {
+                "coverage_type": "date", "date": "2026-11-13",
+                "0": {"players": {"0": {"player": player}, "count": 1}},
+            }}]}}
+
+    record = asyncio.run(fetch_league_rosters(FixtureClient(), "test-token", ["nba.l.1.t.1"]))["nba.l.1.t.1"][0]
+
+    assert record["selected_position"] == {"coverage_type": "date", "date": "2026-11-13", "position": "IL", "is_flex": 0}
+    assert record["status"] == "O"
+    assert _roster_position(record) == "IL"
+    assert _roster_position({"selected_position": [{"coverage_type": "date"}, {"position": "BN"}]}) == "BN"

@@ -52,11 +52,15 @@
   stale is STALE. `NO_PLAYER_SCHEDULE_ROWS` is distinct from an unverified
   empty window; neither implies verified zero games.
 - Yahoo-supplied blank status is legitimate UNKNOWN, not healthy, stale,
-  injured or automatically a missing-import defect. Keep explicit status,
-  blank status, stale import, missing observation, identity-mapping problem
-  and normalization defect distinct. O/NA remain excluded; Q/P remain
-  uncertain. Unrecognized nonblank Yahoo status is also UNKNOWN and cannot
-  silently become confirmed healthy.
+  injured or automatically a missing-import defect. A missing Yahoo `status`
+  field is NO CURRENT YAHOO DESIGNATION only when every condition of
+  `interpret_yahoo_status()` holds (user-approved 2026-11-14; deployed with
+  Phase 6); otherwise it is UNKNOWN too. Keep explicit status,
+  supplied blank, missing status field (`STATUS_FIELD_MISSING`), stale import,
+  missing observation, identity-mapping problem and normalization defect
+  distinct. O/OFS/NA remain excluded; Q/P remain uncertain. Unrecognized
+  nonblank Yahoo status is also UNKNOWN and cannot silently become confirmed
+  healthy.
 - Game-level usage and recent starts require explicit supported game-level
   fields. Season usage, season starter-filter aggregates and minutes cannot
   substitute for game-level usage or recent starts. Phase-3 descriptive role
@@ -143,6 +147,245 @@
 
 ## Waiver Center Invariants
 
+- **Phase 6: horizons and evidence** (model `waiver-horizon-evidence-phase6`;
+  **deployed** 2026-11-14 21:30 UTC, application-only with no migration or
+  refresh; rollback images tagged `pre-phase6`; it carries the NO CURRENT
+  YAHOO DESIGNATION policy below). On the same model, the ordering and
+  wording cleanup below is **deployed** (2026-11-15 02:36 UTC; rollback
+  images tagged `pre-phase6-cleanup`), and so is the API-only heavy-read
+  admission (2026-11-15 14:50 UTC; rollback tag `pre-waiver-reliability`).
+  Image and container identities are dated evidence in
+  `docs/status/current-state.md`.
+  - The board and the optimizer share one pair judgment (`evaluate_pair`)
+    and one ordering (`pair_order`). Never rank a full-roster add against
+    only its highest-net drop. `best_add_for_team_id` and
+    `best_drop_for_team_id` must equal the analysis's best supported pair,
+    and the best add is always in the board candidates. The page fails
+    closed (contract error) on any mismatch and never shows "Next open spot"
+    on a full roster.
+  - Horizons look forward (Rest of Week, Next 7 Days, Next 14 Days =
+    `next_14_days`, Rest of Season Outlook = `ros`); form windows look back
+    (Last 7/14/30 Days, Current Season, Previous Season). Never interchange
+    Next 14 Days and Last 14 Days. Log windows never invent starts or usage.
+  - The recent-sample gate lives in `app/features/waivers/sample.py`. 7+
+    relevant games are SUPPORTED. 5-6 LIMITED pass only in weekly horizons,
+    with 7+ season games, fresh production, a qualified role and 2 of 4
+    corroborations: 10+ games in 30 days, a STABLE or RISING role, FP/G
+    within 13% and a minutes change above -3.0. 0-4 never pass, and a
+    LIMITED Rest of Season Outlook sample is never corroborated.
+  - Never add current-season games as a corroboration: Last 30 Days games
+    are a subset of them, so the same games would count twice (found and
+    removed in the 2026-11-14 acceptance). Prior seasons never corroborate.
+  - Move intent (STREAM, TWO_WEEK_STREAM, LONGER_TERM_ADD, WATCH, HOLD,
+    INSUFFICIENT_EVIDENCE) is descriptive and never changes a decision.
+    Without persisted horizon games it says the support is production and
+    roster fit, never "zero games".
+    - Next 14 Days text names only the evidence behind the move (cleanup,
+      deployed 2026-11-15 02:36 UTC): "Two-week move supported by current production,
+      role, roster impact, and persisted Next 14 Days schedule evidence."
+    - Role is named only for STREAM, which is role-gated; the schedule only
+      when the add has persisted games in the window.
+    - Never imply projections, starts, matchup weeks or complete schedules.
+  - Explicit-drop replacement order (cleanup, deployed 2026-11-15 02:36 UTC)
+    comes from one backend key, `replacement_order` in `service.py`:
+    - The `ACTION_RANK` decision tier first (supported, WATCH, HOLD,
+      insufficient evidence), then measured net (unavailable last), then
+      player ID.
+    - Unsupported measured upside never outranks a supported decision.
+    - The first supported row equals the drop board's best add (`pair_order`
+      for the fixed drop).
+    - The list always includes the top measured option the page names.
+    - The frontend never re-sorts it.
+    - It does not touch the optimizer, the no-drop board or
+      `decision_priority`.
+
+- **Phase 5: one-click refresh and authoritative availability** (model
+  `waiver-availability-phase5`; deployed 2026-11-14 08:26 UTC; first refresh
+  job `629bd689b6f0` SUCCEEDED 08:31:29-08:33:05 UTC with all ten stages
+  verified; post-refresh acceptance fixes deployed 11:40 UTC). Refresh job
+  state lives only in the API process: any API restart or deploy drops the
+  job record, and `GET /api/v1/waivers/refresh` then reports currency from
+  persisted evidence (`last_complete_refresh_source: persisted_evidence`).
+  That is not a reason to refresh. **REFRESH WAIVER DATA** sends one request,
+  `POST /api/v1/waivers/refresh`, the Waiver Center's only mutation. One
+  backend owner (`app/features/waivers/refresh.py`) runs, in order:
+  LEAGUE_SETTINGS, PLAYER_POOL, LEAGUE_ROSTERS, ROSTER_SLOTS,
+  YAHOO_AVAILABILITY_STATUS, NBA_TEAMS_PLAYERS, NBA_SCHEDULE, NBA_GAME_LOGS,
+  NBA_SEASON_STATS and POST_REFRESH_VERIFICATION, for the league resolved from
+  `WAIVER_MANAGER_TEAM_KEY`. Never chain provider imports from the frontend,
+  never call a provider from a waiver GET, and never refresh providers on page
+  load or on a schedule without a separate decision. Success requires a
+  persisted re-read, never an HTTP 200 alone. Source boundaries (Yahoo league,
+  Yahoo players/rosters, NBA) fetch and validate a complete replacement
+  snapshot first, then write it in one transaction stamped with the database
+  clock and verify the stamped counts before commit; a failed boundary keeps
+  its previous snapshot, a Yahoo success survives an NBA failure
+  (PARTIAL_FAILURE), and RETRY FAILED STAGE reruns only failed boundaries.
+  At most one provider import runs at a time: a second POST rejoins the
+  active job, and PostgreSQL advisory lock `7316405219660901117` (shared with
+  the league, player and NBA import routes) returns 409
+  `PROVIDER_IMPORT_IN_PROGRESS`. Job progress lives in the single API worker's
+  memory; `GET /api/v1/waivers/refresh` is database-only and safe to poll.
+  The Yahoo client used by the refresh refuses local practice leagues and any
+  transaction resource; `yahoo_transactions_executed` is always 0.
+- **Yahoo availability classes are authoritative.** Each player has one
+  `availability_classification`: `CONFIRMED_FA`, `CONFIRMED_WAIVER` (with a
+  claim-clear date when supplied), `UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT`,
+  `ROSTERED_BY_OTHER_TEAM`, `ROSTERED_BY_MANAGER`, `AVAILABILITY_UNVERIFIED`,
+  `EXCLUDED_STATUS` or `SOURCE_STALE`. Only the first three are actionable;
+  they require every league roster snapshot current (24 hours and newer than
+  the league/team/settings import) and complete, absence from all of them,
+  explicit FA/W when Yahoo supplied it, and no O/OFS/NA. Without an FA/W field
+  the label is UNROSTERED — CONFIRM FA/WAIVER STATE IN YAHOO, never
+  "confirmed available". `AVAILABILITY_UNVERIFIED` and `SOURCE_STALE` may
+  appear only as POTENTIAL TARGET TO CHECK IN YAHOO; rostered and O/OFS/NA
+  players never appear as any target. Never hard-code a player name (Jrue
+  Holiday was only an acceptance example).
+- **Yahoo status policy** lives only in `app/services/draft/player_status.py`
+  (shared by draft and waivers). Supported tokens are those verified in
+  persisted `status_full`: O, OFS ("Out For Season", verified 2026-11-14) and
+  NA are excluded and cannot fill a lineup slot; Q/P are uncertain; blank and
+  unrecognized values are UNKNOWN and fail closed, except a verified missing
+  field (NO CURRENT YAHOO DESIGNATION, below). Add a new token only after
+  seeing its `status_full` in persisted Yahoo data, and change UI/API wording
+  ("O/OFS/NA") with it; the not-comparable key `Yahoo O/OFS/NA status` is
+  shared with the frontend.
+- **A fresh, verified missing Yahoo `status` field is NO CURRENT YAHOO
+  DESIGNATION; every other blank is UNKNOWN.** `interpret_yahoo_status()` in
+  `player_status.py` is the only interpreter (no waiver-only parser). It uses
+  `yahoo_status_field()` (`EXPLICIT_STATUS`, `UNRECOGNIZED_NONBLANK`,
+  `YAHOO_SUPPLIED_BLANK`, `STATUS_FIELD_MISSING`) and returns a typed
+  decision state (`EXCLUDED`, `UNCERTAIN`, `NO_CURRENT_YAHOO_DESIGNATION`,
+  `UNKNOWN`), the first failing reason, a label and a detail.
+  - The missing field qualifies only on a configured-league pool record no
+    older than 24 hours, linked by Yahoo ID to a resolved, team-consistent
+    identity, with no other status evidence (`status_full`, `injury_note`,
+    truthy `on_disabled_list`, stored identity status) and all league roster
+    snapshots current. Adds still need actionable availability; the
+    manager's own players qualify as drops.
+  - The label is "NO CURRENT YAHOO DESIGNATION". The detail says it is not a
+    medical-health guarantee. Never call it healthy, active, cleared or
+    injury-free.
+  - The status gate (`status_gap`, also used by `transaction_blockers`)
+    passes a blank only for this loader-verified state with fresh status
+    evidence. Candidate defaults fail closed (`UNKNOWN`, gate unsupported).
+    The frontend shows the backend `status_label`/`status_detail` and never
+    infers one.
+  - History: the normalizer adds no keys, so key presence is what Yahoo
+    sent. On 2026-11-14 Yahoo omitted `status` (with `status_full` and
+    `injury_note`) for 426 of 744 records, and no supplied blank existed.
+    Reading absence as "no designation" was first REJECTED that day, then
+    explicitly approved by the user, and deployed with Phase 6 (2026-11-14
+    21:30 UTC).
+  - Real data (2026-11-14 snapshot): 425 of the 426 qualified. The
+    decisions that followed are dated evidence in
+    `docs/status/current-state.md`, not permanent facts.
+- **Gate explanations are backend-owned and specific.** `enrich` names each
+  failing player and window ("Sample gate: [player] N games in the last 14
+  days" / "N games this season") and each unverified status ("Yahoo status
+  gate: [player] blank (UNKNOWN)"); the frontend shows `evidence_blockers`
+  and never rebuilds a reason from `current_season_games`. Decisions do not
+  depend on this text.
+- **Refresh verification must check the rows the model reads.** NBA season
+  stats verify current-season Regular Season rows only (the model never reads
+  preseason rows); game logs already were Regular Season only.
+- **Recommendation invariant:** every supported move or featured player (best
+  add, supported actions, best measured, OTHER GOOD OPTIONS groups, WATCHLIST,
+  option groups and need options) must be in the board's
+  `eligible_candidate_ids` with an actionable class. The backend asserts it
+  for the board and transactions and returns 500
+  `RECOMMENDATION_CONTRACT_VIOLATION` instead of a violating result; the UI
+  checks each featured ID against the eligible map and fails closed with
+  WAIVER MODEL CONTRACT ERROR. The frontend never reconstructs availability.
+- **Import invariants:** player/roster imports never send local practice
+  leagues to Yahoo (league key `yahoo-mock-practice.*`, game key
+  `yahoo_mock_practice` or a `practice_source` payload) and an explicitly
+  named practice league returns 422. A Yahoo snapshot must include every team
+  roster and every roster player's `selected_position` before it replaces the
+  previous one. NBA imports split fetch from persist, write every multi-row
+  upsert in batches of `BULK_INSERT_BATCH_SIZE` (500) to stay under
+  PostgreSQL's 32,767 bind parameters, and verify counts in the same
+  transaction.
+- **Acquisition context:** waiver priority and weekly adds (used, remaining,
+  limit, Yahoo week) come from the existing supported Yahoo teams payload
+  (`waiver_priority`, `roster_adds`) and settings (`max_weekly_adds`) with
+  their import time. They are context only and never change ranking. Exact
+  claim-clear times are unsupported, and `is_owned_by_current_login` is not
+  authentication evidence.
+- **Errors and performance:** the client normalizes failures to status, code,
+  short message, retryable flag and request ID, and never renders non-JSON or
+  HTML bodies. A 504 or timeout is WAIVER ANALYSIS TIMED OUT with RETRY
+  ANALYSIS and REFRESH WAIVER DATA, never HOLD, and no earlier recommendation
+  stays actionable after an error. `/api` responses carry `X-Request-ID`
+  (assigned by nginx, reused by the API). Waiver GETs load one context per
+  request with no per-player or per-pair queries, memoize comparisons per
+  request, return full evidence for a bounded 12 candidates plus every
+  eligible ID, run analysis off the event loop and log one `request_timing`
+  line. Do not raise proxy timeouts to hide slow reads.
+- **Phase 4 roster capacity and team needs are implemented** (model
+  `waiver-capacity-phase4`). Capacity comes only from persisted Yahoo league
+  roster positions plus each roster player's persisted Yahoo slot assignment
+  (`selected_position`); never infer open spots from the number of rostered
+  players. Shape precedence: an open non-injury spot is **ADD ONLY**; else a
+  legal IL move is **MOVE [player] TO IL THEN ADD**; else **ADD + DROP**. An IL
+  move requires persisted Yahoo eligible positions listing an open injury slot
+  and status evidence that is not stale or missing; it is conditional on Yahoo
+  and never a drop. IL occupants use no non-injury spot, cannot fill lineup
+  slots and cannot be dropped to open one. Stale settings or roster (24-hour
+  rule), missing or unknown slot assignments, over-filled slots, an IL
+  occupant without IL eligibility, or unsupported slot types make capacity
+  **UNDETERMINED**: return INSUFFICIENT EVIDENCE with exact blockers, never
+  HOLD and never an assumed drop. Roster/game-time locks, claim timing and
+  live IL eligibility remain unverified (weekly adds are context only); every
+  action needs Yahoo confirmation.
+- Action types are ADD ONLY, MOVE TO IL THEN ADD, ADD + DROP, WATCH, HOLD and
+  INSUFFICIENT EVIDENCE. The capacity shape only decides which action an
+  actionable result becomes; never lower or bypass the existing ADD/STREAM
+  evidence gates. An UNKNOWN Yahoo status (any blank except a verified NO
+  CURRENT YAHOO DESIGNATION) still blocks strong actions. Pairs are
+  evaluated only for ADD + DROP; open capacity uses a sequential fill plan that
+  re-measures uncovered starting slots after each pick. The no-drop
+  comparison keeps the same weights, percentiles and common mask: non-fit
+  components are summed over lineup-eligible non-injury members and divided
+  by the fixed non-injury spots (open and O/OFS/NA-held spots contribute zero);
+  fit is whole-lineup coverage measured once. For the same add/mode/shape,
+  board == fill/watch item == no-drop impact comparison. Team needs describe
+  open and injury-weakened starting slots, persisted-schedule date gaps,
+  coverage and production context; never forecast injury return. Yahoo roster
+  imports must persist the `selected_position` sibling block of each roster
+  player payload.
+- **Decision support is a separate, non-actionable layer** (2026-11-13,
+  `decision_support.py`, same model version). It never changes
+  `recommended_action_type` and never lowers a gate. Classes: SUPPORTED
+  ACTION (the strict ADD ONLY / MOVE TO IL THEN ADD / ADD + DROP result,
+  always ranked first), BEST MEASURED OPTION, WATCH, MEASURED and
+  UNAVAILABLE; the backend `decision_rank` is the only decision order and
+  frontend filters never create recommendations. BEST MEASURED OPTION, WATCH
+  and potential targets say CHECK IN YAHOO and list exact blockers; never
+  label them ADD, STREAM or MUST ADD. With ADD + DROP and no supported pair,
+  a best measured option must out-produce the lowest-producing roster player.
+- Measured production for comparison is Yahoo-rule PPG from the persisted,
+  contract-verified scoring settings even when they are past the 24-hour
+  rule; the 14-day sample (weekly modes, when present) or current season is
+  shrunk toward prior-season production with weight n/(n+10); without prior
+  history at least 4 current-season games are required. Staleness is
+  labeled, never hidden. O/OFS/NA, unresolved identity and players on another
+  team's saved roster are never targets.
+- **POTENTIAL TARGETS TO CHECK IN YAHOO** exist only while league-wide
+  availability is not current; they keep their `AVAILABILITY_UNVERIFIED` or
+  `SOURCE_STALE` class, are listed separately and are never mixed into
+  confirmed available candidates. UNKNOWN Yahoo status (a blank that is not
+  a verified NO CURRENT YAHOO DESIGNATION) blocks supported actions but not
+  BEST MEASURED, WATCH or potential-target listing.
+- Positional needs are HIGH (family slot uncovered), MEDIUM (one absence or
+  schedule gap uncovers it) or COVERED for Guard, Wing/Forward and Center;
+  UTIL and bench are depth, not needs. Needs use the persisted slot
+  configuration even when settings are stale, labeled in `basis`. The page
+  order is TEAM SITUATION, BEST MOVES RIGHT NOW, OTHER GOOD OPTIONS, COMPARE
+  A SPECIFIC DROP, FULL WAIVER LIST, ADVANCED EVIDENCE. The full list and
+  advanced evidence start collapsed; the compare tool starts collapsed unless
+  the roster is proven full or a drop is chosen, and nothing is preselected.
+  The model version appears only in ADVANCED EVIDENCE.
 - **Phase 3 evidence intelligence is implemented**, not projection. Derive
   current role once per player from bulk-loaded persisted inputs and reuse it
   across all pairs. Waiver GETs remain PostgreSQL-only: never call a provider,
@@ -172,7 +415,7 @@
   explicit matching starter-filter GP; absent starter rows are not zero.
   Season starts/usage are separate context, not recent rotation/usage trends.
 - Role/minutes/usage/starts/status/schedule independently expose available,
-  partial, unavailable or stale quality. O/NA remain excluded, Q/P uncertain
+  partial, unavailable or stale quality. O/OFS/NA remain excluded, Q/P uncertain
   and blank status UNKNOWN. Schedule coverage is PARTIAL with rows and UNKNOWN
   without rows; no completeness claim without a manifest. Missing rows are
   not zero games; opponent identity never establishes matchup quality.
@@ -203,7 +446,8 @@
   decisions, not merely warnings. Role cannot bypass production sample gates.
 - **Phase 2 global supported optimization is implemented**, not future work.
   `GET /api/v1/waivers/transactions?mode=this_week|next_7_days|ros` analyzes
-  hypothetical add/drop pairs only, never Yahoo history or execution.
+  hypothetical add/drop pairs only when persisted capacity shows a full
+  roster, never Yahoo history or execution.
   Load the context/evidence once; assess the waiver pool against all persisted
   manager roster drops in memory with the same Phase-1 `enrich` / `compare`
   engine, fixed percentiles/common mask, weights and bounded whole-roster fit.
@@ -229,14 +473,27 @@
   WATCH counts. Assessed counts include pre-ineligible/unknown-availability
   adds, which are excluded from the supported pool. WATCH is a separate
   excluded subset; exclusion reason counts overlap.
-- The global summary sits above the preserved selected-drop workflow.
-  Its analysis dialog renders the exact returned add/drop/comparison,
-  independent of the currently selected roster player. Never substitute a
+- Page order is decision-first: TEAM SITUATION, BEST MOVES RIGHT NOW, OTHER
+  GOOD OPTIONS (groups, WATCHLIST, potential targets), COMPARE A SPECIFIC
+  DROP, FULL WAIVER LIST, ADVANCED EVIDENCE; no drop is ever preselected.
+  Analysis dialogs render the exact
+  returned addition, fill step or add/drop/comparison, independent of any
+  roster player chosen in the compare tool. Never substitute a
   preferred drop, unsupported positive result or least-negative pair.
   Mode/reload changes invalidate old global results; read errors are visible,
   not success-shaped HOLD fallbacks. Maintain modal focus/return and mobile
-  accessibility. Factual acquisition context has no priority/weekly usage/
+  accessibility. Wide tables sit in `.waiver-table-scroll`; any flex or grid
+  item that can contain one needs `min-width: 0`, or an open details widens a
+  390 px page (2026-11-14: 589 px). Check overflow against the configured
+  viewport width: under mobile emulation an overflowing page zooms out and
+  `window.innerWidth` grows with it, so `scrollWidth <= innerWidth` alone
+  cannot detect it. Factual acquisition context has no priority/weekly usage/
   clear timestamp unless verified; no cost penalty or FAAB.
+- The Waiver Center is **PC-only** (user decision, 2026-11-15). Validate and
+  accept it at desktop **1440 × 1000** only, one Playwright project and one
+  worker (`--project=desktop`); do not run mobile/390 px projects for waiver
+  validation. Earlier mobile results remain historical evidence, and the
+  mobile tests stay in the repository.
 - Driveway Dudes `478.l.50505` is **Head-to-Head Points**, 12 teams.
   Persisted normalized settings and saved Yahoo source must agree with the
   verified scoring/roster/waiver contract or fail closed with explicit 409
@@ -248,22 +505,25 @@
 - Continual rolling list, Standard, two-day waivers, four adds/week, no season
   limit, Daily - Today, post-draft waiver rules, direct injury-slot additions.
   **No FAAB** and no planned FAAB feature for this configured league. Historical
-  FAAB references are obsolete/general exploration only. Acquisition value is
-  unavailable and excluded from ranking until current rolling priority and
-  transaction evidence are verified. Do not invent priority, remaining adds,
-  exact clear times or fake acquisition cost.
-- Phase-1 decision semantics remain backend-owned under `waiver-evidence-phase3`: MUST ADD, ADD, STREAM,
+  FAAB references are obsolete/general exploration only. Current waiver
+  priority and weekly adds are context read from the persisted Yahoo teams
+  payload (never inferred from league rules); acquisition value stays
+  unavailable and excluded from ranking. Do not invent priority, remaining
+  adds, exact clear times or fake acquisition cost.
+- Phase-1 decision semantics remain backend-owned and unchanged through `waiver-availability-phase5` and `waiver-horizon-evidence-phase6`: MUST ADD, ADD, STREAM,
   WATCH, PASS, INSUFFICIENT EVIDENCE. Never force MUST ADD or invent AVOID.
   Current-season evidence quality: >=20 EXCELLENT, 10-19 GOOD, 7-9 LIMITED,
   4-6 VERY LIMITED, 1-3 INSUFFICIENT FOR STRONG RECOMMENDATION,
   zero NO CURRENT-SEASON EVIDENCE. These labels are not probability/confidence.
   Below seven games cannot support ADD/STREAM/MUST ADD or Best Add, including
-  Season Evidence mode; prior-season shrinkage cannot bypass this invariant.
+  Season Evidence mode; prior-season shrinkage cannot bypass this invariant
+  (Phase 6: only a corroborated 5-6-game weekly sample, above).
   Missing/stale critical settings, roster, availability, stats or unknown/stale
   Yahoo status blocks strong decisions. STREAM also needs fresh persisted
   schedule and opportunity evidence, with partial coverage disclosed.
   Unrecognized nonblank Yahoo status remains UNKNOWN and cannot support a
-  strong action or PASS; blank remains legitimate UNKNOWN, not healthy. An
+  strong action or PASS; a supplied blank or unverifiable missing field
+  remains legitimate UNKNOWN, not healthy. An
   incompatible model version makes the affected surface non-decision-ready.
   Preserve structured HTTP 409 contract failures as errors, never HOLD or
   empty-success fallbacks.
@@ -271,7 +531,8 @@
   MUST ADD or PASS; do not auto-map or alter identity/team rows during analysis.
   All measured nonpositive selected-drop swaps produce HOLD [selected player],
   never a least-negative Best Add. Positive low-sample swaps remain WATCH.
-  User-facing `ros` is **Season Evidence**, historical/stat-based, never a projection.
+  User-facing `ros` is **Season Evidence**, historical/stat-based, never a projection
+  (Phase 6 labels the horizon Rest of Season Outlook).
 - Box Score Bully is the configured manager analysis team for the personal
   application; this configuration is not Yahoo-authenticated ownership evidence.
   `/waivers` opens directly with no league/team selectors, default Rest of Week
@@ -282,8 +543,10 @@
   Optional caller league/team keys must match or return 422; never fall back
   to a different roster when configured evidence is missing. The frontend sends
   no arbitrary team keys or URL/saved-state selection.
-  `GET /api/v1/waivers/{player_id}/impact` uses the internal player identity ID.
-  `GET /api/v1/waivers/replacements?drop_player_id=...` is the primary selected
+  `GET /api/v1/waivers/{player_id}/impact` uses the internal player identity ID;
+  without a drop it returns the no-drop comparison when capacity supports one
+  and no comparison otherwise, never a silently chosen drop.
+  `GET /api/v1/waivers/replacements?drop_player_id=...` is the optional exact
   roster-player comparison; the full roster is included in board responses.
   An explicit drop controls the ranking and detailed impact, never a silently
   substituted preferred drop or no-drop/open-slot comparison.
@@ -293,7 +556,7 @@
 - Availability requires fresh affirmative persisted Yahoo ownership or absence
   from every fresh imported league roster. Absence means `unrostered`, not
   verified free-agent or waiver timing. Unknown availability is withheld.
-  O/NA are excluded, Q/P remain uncertain, blank Yahoo status is unknown.
+  O/OFS/NA are excluded, Q/P remain uncertain, blank Yahoo status is unknown.
 - Waiver roster/settings/availability gates use 24-hour import freshness;
   later league/team/settings imports also invalidate older roster snapshots.
   This does not change the foundation roster API's source-order-only stale
@@ -303,7 +566,8 @@
   Sunday inclusive, not a verified Yahoo matchup week. With fewer than two
   inclusive dates remaining it adds a limited-days warning; Sunday is one day.
   Next 7 Days is a separate view/ranking covering
-  Pacific today through today plus six dates, not a Yahoo matchup period.
+  Pacific today through today plus six dates, not a Yahoo matchup period
+  (Phase 6: Next 14 Days covers today through today plus 13).
   Season Evidence schedule ends June 30 following the league
   season start year, or today if that date has passed. Count only persisted
   non-final/non-postponed/non-cancelled games. Coverage remains partial; no
@@ -318,7 +582,8 @@
   and configured roster. DATA GAPS are grouped as FIXABLE DATA ISSUE, WAITING
   FOR MORE GAMES, SOURCE DOES NOT SUPPLY, NEW SOURCE REQUIRED and UNVERIFIED
   YAHOO CONTEXT. Preserve raw Yahoo status and Yahoo/NBA teams independently.
-  Blank Yahoo status remains UNKNOWN, not healthy. Preserve distinct status
+  Blank Yahoo status remains UNKNOWN, not healthy, unless it is a verified NO
+  CURRENT YAHOO DESIGNATION. Preserve distinct status
   causes for explicit Yahoo status, Yahoo-supplied blank, stale player-pool
   import, missing player observation, identity mapping issue and normalization
   defect.
@@ -345,7 +610,7 @@
   league season (current Pacific year cutoff if absent), not a projection.
   Historical/schedule imports older than seven days cannot supply scored
   components; stale history cannot influence hold labels.
-- `waiver-evidence-phase3` scores supported Yahoo points modifiers only; missing
+- The waiver model scores supported Yahoo points modifiers only; missing
   required stats are not zero-filled. Production/schedule use deterministic
   midrank percentiles over the loaded league pool; ties stay equal. Positional
   fit uses existing Yahoo eligibility/slot maximum matching. Opportunity uses
@@ -365,9 +630,11 @@
   fit evidence are mandatory for an overall score. Acquisition value remains
   unavailable; configuration does not create evidence.
 - Best Overall is secondary context and ranks the selected mode's production
-  percentile alone, not roster fit. Selected-player replacements rank measured
-  net improvement then stable ID, unavailable last; generic board retains
-  weighted-overall ordering. A single best-team ID requires actionable supported
+  percentile alone, not roster fit. Selected-player replacements rank the
+  decision tier first (Phase-6 cleanup, deployed 2026-11-15, as above), then
+  measured net improvement and stable ID, unavailable last; without a drop the board
+  orders by backend `decision_priority` (action tier, need fit, net
+  improvement, weighted overall, ID). A single best-team ID requires actionable supported
   impact and >=7 current-season games for add and drop (plus seven recent games
   for short windows), otherwise
   only a limited-evidence top measured result. Negative swaps are not improvements:
@@ -376,16 +643,18 @@
   All actionable recommendations, needs, drops, impact and explanations use the
   configured manager roster only. Other league teams contribute only existing
   league-wide availability/value context; they cannot become the analysis target.
-  An actionable add requires positive supported impact; imported open
-  non-injury capacity permits no-drop analysis but does not bypass evidence
-  gates. This is not Yahoo transaction eligibility.
+  An actionable add requires positive supported impact; persisted open
+  non-injury capacity or a legal IL move makes the add a no-drop action but
+  does not bypass evidence gates. This is not Yahoo transaction eligibility.
 - Generic drop options use only the configured roster; foreign drops are
   rejected. Explicit replacement responses contain only the selected drop.
-  Fit is 0-100 percentage of required starting slots coverable, measured once
+  Fit is 0-100 percentage of required starting slots coverable by
+  lineup-eligible players (not O/OFS/NA, not IL occupants), measured once
   per roster, not summed player marginal contributions. Fully covered before/
   after lineups have zero positional gain regardless of matching reassignment
   or UTIL/bench flexibility. Eligibility is not player quality.
-  Non-fit roster components are means on the same 0-100 scale, with deltas
+  Non-fit roster components are means on the same 0-100 scale (no-drop
+  comparisons divide lineup-member sums by the fixed non-injury spots), with deltas
   bounded -100 to +100. All compared replacements and both sides share one
   common measured-component mask, weights and fixed production percentiles.
   Missing optional evidence is omitted, not filled; missing mandatory roster
@@ -483,7 +752,64 @@
   migration; preserve pre-existing draft and identity state.
 - NBA imports precede metric recomputation; ordinary reads/calculations use
   persisted inputs. The 600-second proxy timeout is scoped to the exact
-  NBA-import route, not all APIs.
+  NBA-import route, not all APIs; every other `/api/` request is cut off at
+  60 seconds (504) by the frontend nginx proxy. After an idle period the API
+  process is swapped out and its first heavy waiver reads can 504 until it
+  pages back in (2026-11-14 Phase-6 baseline); retry once warm, never raise
+  the timeout, and never treat it as a product defect.
+- **2026-11-15 incident (proven):** the idle API sat ~93% in swap (the swap
+  file is on the single rotational system disk). One normal desktop page load
+  sends refresh status, board and best moves at once. Paging back in ran at
+  about 230 major faults/s: refresh status hit its 30 s client limit, board
+  and best moves got 504, and the deployed API kept computing the abandoned
+  reads for up to 472 s. While paging, its single event loop froze, the
+  5-connection pool filled and new asyncpg connects timed out (500).
+  - Never stack heavy reads on a slow API: no retries, reloads, horizon
+    switches, REFRESH clicks or parallel acceptance.
+  - Before heavy validation, check the API's `VmSwap` (`/proc/<pid>/status`)
+    and host pressure (Prometheus with node-exporter and cAdvisor on `:9090`).
+    Start the browser before warming the API with one internal non-abandoned
+    read: Chromium's start-up pushed the API back into swap and reproduced
+    the incident.
+  - A refresh POST whose client timed out can still start the job later.
+  - Heavy-read admission (one at a time, cancel on disconnect) is **deployed**
+    (2026-11-15 14:50 UTC; rollback tag
+    `fantasy-basketball-gm-api:pre-waiver-reliability`). It bounds the damage
+    from overlapping and abandoned reads but does not fix the host.
+    Keeping the API resident (more RAM, swap off the rotational disk, or a
+    no-swap limit for the `api` container) remains the infrastructure fix.
+- **API-only deployments:**
+  - Identify the running image by the container's `ImageManifestDescriptor`
+    and `docker image inspect --platform linux/amd64 <tag>`, because recorded
+    index IDs can stop resolving under the containerd store.
+  - Prove a rollback tag by that manifest and by `/app` plus `pip freeze`
+    content.
+  - After `docker compose up -d --no-deps api`, compare the new container's
+    compose-network IP with the old one; nginx resolves `api` only at start.
+    If the IP changed, run `nginx -s reload` inside the frontend container;
+    never recreate the frontend for DNS.
+- Each provider import boundary is all-or-nothing: one bad request or
+  statement discards everything that boundary fetched, and the previous
+  snapshot stays. Batch every multi-row
+  INSERT/UPSERT (NBA imports use `BULK_INSERT_BATCH_SIZE = 500`); PostgreSQL
+  rejects a statement with more than 32,767 bind parameters, which the
+  unbatched 30-day game-log upsert hit on 2026-11-14.
+- The Yahoo player/roster import must only request real Yahoo leagues. Local
+  Yahoo Mock Practice pseudo-leagues (`yahoo-mock-practice.*`, game key
+  `yahoo_mock_practice` or a `practice_source` payload) copy a real league's
+  pool and are never sent to Yahoo; naming one returns 422. REFRESH WAIVER
+  DATA always passes the configured league; pass `league_key` when importing
+  manually.
+- Judge a refresh by persisted results (`imported_at`, roster
+  `roster_position` counts), never by the request having been sent; the
+  refresh's POST_REFRESH_VERIFICATION stage does exactly that. The API runs
+  with `--no-access-log` and configures no logging: request status lives in
+  the frontend nginx access log, and app warnings reach the API container log
+  only as bare messages without their `extra` fields (path/status). Refresh
+  stages (`waiver_refresh job=...`) and waiver read timings
+  (`request_timing`) log through `uvicorn.error`, so they appear there; the
+  `X-Request-ID` shown in the UI finds the matching `request_timing` line
+  (the default nginx access-log format does not record it).
 - Do not re-import providers or mutate production for documentation validation.
   Do not bypass TLS validation. The API has no general user authentication and
   must remain on a trusted network.

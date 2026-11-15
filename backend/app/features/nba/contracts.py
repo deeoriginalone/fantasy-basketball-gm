@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 from pydantic import BaseModel
 
 
@@ -13,3 +15,6 @@ class NbaImportResult(BaseModel):
     player_schedule_entries: int
     unresolved_schedule_team_references: int
     identity_mappings_added: int
+    # Transaction timestamp stamped on every upserted row, and the newest game date in this import.
+    imported_at: datetime | None = None
+    latest_game_date: date | None = None

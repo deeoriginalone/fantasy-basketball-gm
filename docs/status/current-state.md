@@ -1,6 +1,1889 @@
-# Waiver Source Integrity & Coverage — 2026-10-26
+# CURRENT STATE — Waiver Heavy-Read Admission Fix — API-Only Deployment Verified — 2026-11-15
 
-**STATUS: VALIDATED LOCALLY / NOT DEPLOYED**
+**STATUS: DEPLOYED AND VERIFIED (2026-11-15 14:50 UTC; 06:50 PST).** The
+validated heavy-read admission fix (`admission.py` and its `router.py`
+wiring) is live. This was an API-only deployment:
+- No frontend rebuild or recreate, and no `db` or `caddy` change.
+- No migration, refresh, provider call, OAuth, Yahoo transaction, commit or
+  push.
+
+The model is unchanged (`waiver-horizon-evidence-phase6`), and so are the
+recommendations: all 24 captured responses are identical before and after.
+The Waiver Center is PC-only; the browser target is 1440 × 1000.
+
+### Release contract (from the worktree and its tests)
+
+- One heavy waiver read (board, best moves, replacements, impact) runs at a
+  time.
+- The slot resolves before any database dependency, so a queued read holds
+  no PostgreSQL session.
+- A read whose client disconnects, queued or loading, is cancelled and logged
+  `status=499`.
+- `request_timing` and `Server-Timing` gain a `queue` phase. Refresh routes
+  are not gated.
+
+### Pre-deployment gate
+
+- The running API differed from the worktree only in `admission.py` (new)
+  and `router.py`. The other 69 app files were byte-identical.
+- Every recommendation definition is AST-identical:
+  - pairing and ordering: `evaluate_pair`, `pair_order`,
+    `replacement_order`, `build_board`, `analyze_transactions`;
+  - comparison: `compare`, `compare_no_drop`, `enrich`, `classify_action`;
+  - gates: `transaction_blockers`, `sample_gap`, `status_gap`,
+    `classify_availability`, the invariant asserts;
+  - scoring: `aggregate`, `production`, `scoring_fields`;
+  - constants and capacity: `MODEL_VERSION`, `ACTION_RANK`, roster capacity.
+- `decision_priority` (set in `build_board`) and the sample evaluator
+  (`sample.py`) live in byte-identical files.
+- The fix files were last modified at 12:39-12:41 UTC, before the earlier
+  validation (waiver suites 307, full backend 471, repository desktop 22/22).
+- Re-run against the exact hashes: 10/10 focused tests. These are the 4
+  admission regressions, including the real-PostgreSQL cancellation, and 6
+  select-only, provider-free and timing tests.
+
+### Deployment (14:42-14:51 UTC)
+
+- **Baseline (read-only):**
+  - Health 0.010 s; refresh status 0.055 s. All 9 sources were current from
+    the user's own 14:29-14:30 REFRESH (job `4b89b6dd72c9`).
+  - Rest of Week board 4.9 s, best moves 6.7 s.
+  - 24 serial captures, all 200: four horizons × board, best moves, impact
+    with and without the drop, and two drop lists.
+  - Database at 14:42:21: 29 tables, 80,720 rows, 6 migrations, no active or
+    blocked session.
+- **Backup:** `~/fantasy-gm-pre-waiver-reliability-20261115T144551Z.dump`
+  (`pg_dump -Fc`, 138 MB, mode 0600, no overwrite). `pg_restore --list`
+  reads it (29 TABLE DATA entries); the inventory and all 29 COPY row counts
+  equal the live database. Nothing was restored.
+- **Rollback tag:** `fantasy-basketball-gm-api:pre-waiver-reliability`.
+  - Index `fe0c214a1cb1`; linux/amd64 manifest `a3e52763ba8b`, which equals
+    the old container's `ImageManifestDescriptor`.
+  - Its `/app` (198 files) and `pip freeze` are identical to the old
+    container. The old container's recorded index `2e0fb38b2e4b` no longer
+    resolves under the containerd store.
+- **Build:** `docker compose build api` (21 s) produced index
+  `48035cedfb61` (linux/amd64 `da05adc29d45`).
+  - Versus the old image, only `admission.py`, `router.py` and
+    `tests/test_waivers.py` differ. `pip freeze`, `migrations.py` and every
+    ORM `models.py` are identical.
+  - App and test source equal the worktree (102 files).
+- **Recreate:** `docker compose up -d --no-deps api` ran 14:50:04-14:50:22;
+  health returned 200 at 14:50:31.
+  - 502s appeared only in the ~25 s stop/boot window (4 health probes, 6
+    observer polls).
+  - The new container `bdf329394c93` kept its compose-network IP, so nginx needed no
+    reload.
+  - frontend `3b6a562ed6d4` (started 02:36:31), db `d6a02fc4fe35` and caddy
+    `08198174d855` are unchanged.
+- **Rollback, if ever needed:** retag `pre-waiver-reliability` as `latest`
+  and recreate only `api`. No database rollback is needed.
+
+### Acceptance (GET only)
+
+- **Model and source:** the model is `waiver-horizon-evidence-phase6` on
+  board, best moves, replacements and impact, and the running source equals
+  the worktree (71 files).
+- **No recommendation change:** the same 24 paths, re-fetched serially after
+  the deploy (3.6-8.1 s each, queue 0), are identical apart from request
+  stamps.
+  - Board = optimizer and the exact pair (optimizer = board = replacements =
+    impact) hold in all four horizons.
+  - All 8 drop lists are ordered by tier, net, then ID. The drop stays fixed
+    and WATCH stays WATCH.
+  - Safety and NO CURRENT YAHOO DESIGNATION semantics are unchanged.
+- **Decisions** on the 14:29 snapshot (roster 13/13, IL 3/3, adds 4 of 4,
+  priority 4th):
+
+  | Horizon | Add / drop | Decision | Net |
+  |---|---|---|---|
+  | Rest of Week | Bilal Coulibaly / Kris Dunn | ADD (STREAM) | +0.163 |
+  | Next 7 Days | Coulibaly / Kevin Huerter | STREAM | +0.625 |
+  | Next 14 Days | Brayden Burries / Huerter | STREAM (TWO-WEEK) | +0.944 |
+  | Rest of Season Outlook | Ja'Kobe Walter / Huerter | ADD (LONGER-TERM) | +0.128 |
+
+- **Admission (bounded load, through Caddy):**
+  - **Running plus queued:** R1 (Rest of Season board) took 7.9 s with no
+    queue; R2 (best moves) waited 6,867 ms, then loaded. Exactly one API
+    transaction existed throughout, so the queued read held none. Threads
+    stayed at 7.
+  - **Client abort:** R3's client aborted at 2.5 s (the browser-abort path,
+    not the nginx timeout). The API logged `status=499 total_ms=2516
+    load_ms=2508`: it stopped 16 ms after the client left, before analysis,
+    and its transaction disappeared.
+  - **Release and recovery:** R4, queued behind R3, got the slot after
+    1,941 ms. R5 returned 200 with no queue; nothing leaked.
+  - **All 62 heavy reads since the deploy:** the largest overlap between two
+    work intervals is 6.7 ms (the slot handoff), so at most **1** heavy
+    analysis ran at a time. 16 reads queued, the longest for 7.66 s.
+  - **Host:** the API had 0 swap and 0 new major faults, with RSS ≤ 278 MB.
+    IO pressure stayed ≤ 12.6% and memory "full" ≤ 0.64%; observer polls
+    stayed 200.
+- **Desktop 1440 × 1000 (4/4):** one page load sends 3 API reads. Refresh
+  status took 0.13 s and the board 4.8 s; best moves took 10.2 s after
+  waiting 4.7 s for the server slot.
+  - The browser had 2 heavy requests in flight, and the server analyzed them
+    one at a time. There were no duplicates or aborts, and every read
+    returned 200.
+  - All panels, four horizons and the exact-pair dialogs pass.
+  - Compare a Specific Drop ranks supported moves before a higher-net WATCH
+    in two cases: DeMar DeRozan +0.419 under three ADDs for drop Dunn, and
+    Julian Reese +0.668 under three STREAMs for drop Huerter.
+  - axe 0, `scrollWidth` 1440, focus returns, GET only.
+- **Database:** identical to the 14:42 baseline, including every write
+  counter and `yahoo_credentials`.
+  - 0 refresh POSTs, refresh-job lines, provider calls, OAuth actions or Yahoo
+    transactions.
+  - The 850 external observer GETs are recorded separately.
+
+### Remaining limits
+
+- **The host hardware is unchanged:** a 7.3 GB shared host, with swap on the
+  single rotational system disk. The fix bounds abandoned and overlapping
+  waiver work, but it does not stop the kernel from swapping an idle API, and
+  it does not make a cold first read fast.
+  - A cold read can still exceed nginx's 60 s. Its work now stops and nothing
+    piles up.
+  - Starting the Playwright browser still pushes host IO pressure to ~68%.
+- **Serialization costs latency:** a page's second heavy read waits for the
+  first (best moves ~10 s instead of ~7 s warm).
+- **Known limits from the review:**
+  - Analysis already in a worker thread finishes after a cancel, so it can
+    overlap the next read by up to ~2 s.
+  - A request-task cancellation that arrives during cleanup can be absorbed.
+
+# Waiver Center Reliability Incident — Recovered; Heavy-Read Admission Fix Validated Locally (NOT Deployed) — 2026-11-15
+
+> **Superseded (same day):** the admission fix described below as "not
+> deployed" was deployed API-only at 14:50 UTC and verified; see the
+> current-state section above. This section is kept as the incident record.
+
+**STATUS: RECOVERED (2026-11-15 11:35-12:50 UTC; 03:35-04:50 PST).** The
+deployed Waiver Center answers every read again, and its evidence is current.
+The user's own REFRESH WAIVER DATA click succeeded at 11:20:50 UTC. The cause
+was host capacity, amplified by two code-level reliability gaps. A fix for
+those gaps is implemented and validated in the worktree but **not deployed**.
+Production is unchanged:
+- Same containers and images: api `cdd738a1899e` (image `2e0fb38b2e4b`),
+  frontend `3b6a562ed6d4` (`a7f00cb72046`), `db` and `caddy`.
+- Model `waiver-horizon-evidence-phase6`.
+- No API restart, migration, OAuth, Yahoo transaction, commit or push.
+- No refresh or provider call by this investigation.
+
+The Waiver Center is now **PC-only**: validation and acceptance use desktop
+1440 × 1000 only, and earlier mobile results remain historical evidence.
+
+### What the user saw (11:09-11:21 UTC)
+
+- **11:09:43:** Windows Chrome loaded `/waivers`. The page sent refresh
+  status, board and best moves at once, then board and best moves twice more
+  (reload/retry).
+  - Refresh status hit its 30 s client limit: "Saved-evidence freshness could
+    not be read".
+  - Board and best moves got nginx 504 at 60 s: WAIVER ANALYSIS TIMED OUT,
+    and BEST MOVES was withheld.
+- **11:10:25-11:16:48:** REFRESH WAIVER DATA was clicked 5 times, and every
+  POST timed out in the browser (499). The API processed them later:
+  - Job `a8e4f09d6c16` failed at its first stage with a database-connection
+    TimeoutError and persisted nothing. Its record was replaced by the next
+    job, so its request count is unknown.
+  - Job `68a294158101` (requested 11:16:18) **succeeded** at 11:20:50: all 10
+    stages verified, 46 read-only Yahoo requests, 0 practice-league requests,
+    `yahoo_transactions_executed = 0`. The job renewed the stored Yahoo access
+    token as usual (`yahoo_credentials.updated_at` 11:16:19).
+- The refresh was legitimately needed: Yahoo evidence had gone stale at
+  08:31 UTC. The browser never saw the success because the POST had already
+  timed out client-side.
+
+### Root cause (proven)
+
+| Class | Finding | Evidence |
+|---|---|---|
+| A. RAM exhaustion / swap | Swap **yes**, RAM exhaustion **no** | From 03:32 to 11:09 the API only served external observer polls. By 10:50 its working set was ~25 MB with **~329 MB in swap** (~93%). `MemAvailable` stayed 3.5-4.3 GB throughout, and memory PSI "full" stayed mostly under 10% in the stall. |
+| B. Rotational-disk IO | **Yes** | `sdb` (HGST 2.5" laptop disk holding root and `/swap.img`) ran at 93-98% util and 150-260 reads/s. In 11:09-11:21 the API had **78,229 major faults / 957 MB read** and the DB 12,321; every other container was negligible (cAdvisor via Prometheus). API swap drained 330 → 3 MB over ~10 minutes (~0.5 MB/s), while API CPU stayed at 1-7%. |
+| C. API worker wedged | **Yes** (consequence) | Single uvicorn worker. The event loop froze while threads page-faulted, so external observer polls returned 504 for ~7 minutes. Up to 8 waiver requests were in flight. |
+| D. Abandoned reads keep running | **Yes** | Board and best-move reads aborted at 11:09:57 (499) finished 200 to nobody after **393 s and 472 s**, and another after 360 s. The API also started reads whose clients were already gone. |
+| E. PostgreSQL blocking | **No** | No locks, blocked queries or idle-in-transaction sessions. A secondary symptom: slow and abandoned reads filled the 5-connection pool, so new asyncpg connects timed out (seven 500s). |
+| F. nginx upstream/DNS | **No** | Upstream timeouts only; nginx resolved the API. |
+| G. Refresh-status endpoint | Victim | The database-only read could not answer within the 30 s client limit while the process stalled. |
+| H. Application regression | **No** | The running API source equals the validated worktree (70 files), and the slow phase is the unchanged context load. |
+| I. Combination | **Yes** | A (swap) + B + C + D, with E and G as symptoms. |
+
+The prior 2026-11-15 03:04-03:32 stall had the same mechanism. This session's
+own VS Code server start-up (an extension host of ~650 MB, 11:35-11:39)
+briefly pushed host memory PSI to 70% and the API back to 147 MB of swap.
+
+### Reproduction with one normal desktop page load (12:10-12:18 UTC)
+
+Starting the Playwright browser pushed the API back into swap (148 → 263 MB).
+One page load at 1440 × 1000 then reproduced the incident exactly:
+- Refresh status 499 at 30 s; board and best moves 504 at 60 s.
+- Both abandoned reads completed 200 **441 s** later.
+- A second test's page load got 500s (database connect TimeoutError, pool
+  exhausted).
+- Observer polls returned 504 from 12:12:37 to 12:17:55.
+
+The browser was stopped, nothing more was sent, and the API recovered by
+itself (health 0.12 s at 12:18:07; no restart).
+
+Measured cost of one cold read: an internal board read (no proxy cutoff) took
+**71.8 s** (load 69.5 s) with 16,446 major faults (~230/s). Warm, it takes
+4-7 s.
+
+### Recovery and verification (serial, GET only)
+
+- **No restart:** health answered in 0.16 s at 11:38, so the API was slow,
+  not wedged.
+- **Freshness:** every source is current from job `68a294158101`:
+  - Yahoo: league 11:17:53, players and rosters 11:18:11 UTC; current until
+    2026-11-16 11:17 UTC.
+  - NBA: 11:19:23 UTC; current until 2026-11-22.
+  - No refresh was run here.
+- **Serial reads through Caddy (warm):**
+  - Health 0.02 s and refresh status 2.9 s.
+  - Board / best moves: Rest of Week 7.1 / 5.1 s, Next 7 Days 5.6 / 4.2 s,
+    Next 14 Days 4.9 / 4.4 s, Rest of Season Outlook 20.5 / 6.0 s.
+  - All 200, with no stuck request.
+- **API acceptance (68 + 4 serial GETs, no retries, 0 failures).** The fresh
+  data changed the answers. Roster 13/13, IL 2/3, adds 2 of 4, priority 4th.
+  Every horizon is MOVE Jarrett Allen TO IL, THEN ADD:
+
+  | Horizon | Add | Decision | Intent | Net |
+  |---|---|---|---|---|
+  | Rest of Week | Kevin Huerter | ADD | STREAM | +2.223 |
+  | Next 7 Days | Cam Spencer | STREAM | STREAM | +2.821 |
+  | Next 14 Days | Brayden Burries | ADD | TWO-WEEK STREAM | +3.136 |
+  | Rest of Season Outlook | Ja'Kobe Walter | ADD | LONGER-TERM ADD | +2.391 |
+
+  - **Board = optimizer:** in every horizon. Optimizer = board = impact on
+    candidate, comparison, weights, sample, role, schedule, status,
+    availability and the IL step.
+  - **Exact pair with a drop:** replacements = impact for an explicit drop
+    in every horizon.
+  - **All 60 Compare-a-Specific-Drop lists:** tier, then net, then ID; the
+    drop stays fixed, the first supported row is the best add, the top
+    measured option is listed, WATCH stays WATCH, and supported rows always
+    have positive net.
+  - **Safety:**
+    - 294 eligible and 276 `EXCLUDED_STATUS`.
+    - No manager, other-team (159) or O/OFS/NA player is an add or target,
+      and unresolved identities never support a move.
+    - Jrue Holiday's impact returns 409, and the 3 OFS players are excluded.
+- **Desktop 1440 × 1000 (4/4, one project, one worker, through Caddy/TLS):**
+  - One page load sends exactly 1 refresh-status, 1 board and 1 best-move
+    read (max 3 concurrent, 2 heavy). There are no duplicates, so StrictMode
+    adds none in production.
+  - WAIVER DATA IS CURRENT, TEAM SITUATION and BEST MOVES (the optimizer's
+    IL move) render; VIEW DETAILS opens the exact pair, and focus returns.
+  - OTHER GOOD OPTIONS, FULL WAIVER LIST (294) and ADVANCED EVIDENCE render.
+  - All four horizons and Compare a Specific Drop (three horizons) pass.
+  - Simulated 504 and unanswered refresh-status messages are structured; no
+    HTML is shown.
+  - axe 0, `scrollWidth` 1440, and every request was a GET.
+  - Even warm, a host memory event during the run made two horizon switches
+    take 39.6 s and 47.9 s, close to nginx's 60 s.
+- **Database:** identical to the 11:44 UTC baseline: all 29 row counts,
+  newest timestamps, `schema_migrations` and every table's cumulative write
+  counters, including `yahoo_credentials`. nginx logged 1,924 requests since
+  11:35, all GET. Every non-200 is accounted for:
+  - the designed Jrue 409;
+  - the 12:10-12:18 reproduction.
+
+### Permanent fix (implemented and validated locally; NOT deployed)
+
+`backend/app/features/waivers/admission.py`, wired into the four heavy routes
+in `router.py`:
+- One heavy read (board, best moves, replacements, impact) runs at a time.
+- The slot is a route-level dependency resolved before `configured_team`, so
+  a queued read holds no database connection.
+- A read whose client disconnects, queued or loading, is cancelled and logged
+  `status=499`, and the pooled connection and running query are released.
+- `request_timing` and `Server-Timing` gain a `queue` phase.
+- Unchanged: results, scoring, weights, samples, status policy, availability,
+  capacity, optimizer, exact-pair contract, horizons, invariant, model version,
+  proxy, client and connect timeouts. Refresh routes are not gated.
+- **Independent review:** no defects. It checked 195 forced interleavings and
+  120 real uvicorn requests with random disconnects: peak 1, no slot leak.
+  Two known limits remain:
+  - Analysis already in a worker thread finishes after a cancel, so it can
+    overlap the next read by up to ~2 s.
+  - A request-task cancellation that arrives during cleanup can be absorbed.
+    Nothing in this deployment cancels request tasks.
+
+**Validation:**
+- 4 new regression tests in `tests/test_waivers.py` failed on the deployed
+  code for the proven causes, then passed: an abandoned read ran to
+  completion; 3 heavy reads overlapped with 3 sessions; a queued read kept
+  running; a real PostgreSQL `pg_sleep` kept running after the disconnect.
+- Waiver suites 307 and full backend 471 passed.
+- Frontend (unchanged): unit 63/63, `tsc -b`. The production build with the
+  compose value `VITE_LIVE_DRAFT_POLL_INTERVAL_MS=60000` reproduces the
+  deployed `index-0LZfF9Tl.js` byte for byte (25 files).
+- Repository Playwright waiver suite: desktop 22/22 (mobile not run).
+
+**Infrastructure (recommended, not applied):** keep the API resident. Options:
+- Add RAM.
+- Move swap off the rotational system disk.
+- Give the `api` container a no-swap memory limit.
+- Trim co-tenants (cAdvisor's cgroup was ~1 GB).
+
+Never raise proxy, client or connect timeouts.
+
+**Proposed follow-up:** let the page's board and best-move reads share one
+context load.
+
+### Observations (no change made)
+
+- **No-drop excluded reasons are per player.** In the no-drop shape,
+  `excluded_addition_reasons` keys stay per player for name-prefixed
+  blockers: `gate_category` groups only sample and status gates, giving 368
+  keys. O/OFS/NA players appear only as exclusions in ADVANCED EVIDENCE.
+- **Deployed bundle needs the build value.** A frontend build without
+  `VITE_LIVE_DRAFT_POLL_INTERVAL_MS=60000` yields a different bundle
+  (`index-EEPIAMpQ.js`).
+- **nginx buffers large responses to disk.** It writes the 1.4 MB board
+  response to a temp file on the same disk.
+
+# Phase-6 Ordering and Wording Cleanup — Deployed and Verified — 2026-11-14
+
+**STATUS: DEPLOYED AND VERIFIED (2026-11-15 02:36 UTC; 2026-11-14 18:36
+PST).** Production runs the Phase-6 release (deployed 21:30 UTC, record
+below) plus this cleanup, on the unchanged model
+`waiver-horizon-evidence-phase6`. The cleanup changes no recommendation:
+scoring, weights, sample tiers, status policy, availability, roster capacity,
+horizons, form windows, optimizer semantics and gates are untouched. This was
+an application-only deployment: no migration, refresh, provider call, OAuth,
+Yahoo transaction, database change, commit or push. The local validation
+record comes first, then the deployment and its read-only acceptance.
+
+### Changes
+
+1. **Compare a Specific Drop ordering.** Root cause: with an explicit drop,
+   `build_board` sorted candidates by measured net improvement alone. So
+   WATCH DeMar DeRozan (+0.847) was listed above the supported Jerami Grant
+   (+0.728) for drop Bones Hyland.
+   - `replacement_order` (`service.py`) now sorts the explicit-drop list by
+     decision tier, using the canonical `ACTION_RANK` map:
+     1. Supported ADD / STREAM / MUST ADD (ADD + DROP).
+     2. WATCH.
+     3. Supported nonpositive PASS (shown as HOLD).
+     4. INSUFFICIENT EVIDENCE and unavailable comparisons.
+   - Within a tier it keeps the existing order: measured net (unavailable
+     last), then stable player ID. In the supported tier this equals
+     `pair_order` for the fixed drop, so the first card is that drop's best
+     add.
+   - Every candidate keeps its own decision and its exact comparison against
+     the selected drop; nothing is promoted.
+   - The list always includes the top measured option the page names,
+     appended when it falls outside the 12-row window.
+   - The page renders the backend order as received and states it in one
+     sentence. There is no client-side sorting.
+   - Unchanged: the optimizer (`evaluate_pair`, `pair_order`), the no-drop
+     board (`decision_priority`, best add/drop) and `eligible_candidate_ids`.
+2. **Next 14 Days wording.**
+   - Old: "Supported over Next 14 Days by schedule and opportunity and the
+     persisted two-week schedule."
+   - New: "Two-week move supported by current production, role, roster
+     impact, and persisted Next 14 Days schedule evidence."
+   - Role is named only for STREAM, which is role-gated. The schedule is
+     named only when the add has persisted games in the window; otherwise:
+     "… current production and roster impact. Games for X in Next 14 Days
+     are not established (REASON), so the schedule is not part of this
+     support."
+   - No projection, matchup-week, start or completeness claim.
+
+### Validation (serial, host pressure checked before each heavy step)
+
+- **Backend:** focused 16, then waiver suites 289, then full 467 passed.
+  - New tests: supported before a higher-net WATCH, with net/ID ties, the
+    HOLD and insufficient tiers, the fixed drop, unchanged comparisons and
+    unchanged optimizer and board winners.
+  - The top measured WATCH stays listed when supported moves fill the list.
+  - Next 14 Days wording for ADD, STREAM and unscheduled moves.
+  - All of these failed before the change. The persisted replacements test
+    now asserts the tier contract instead of net-only order.
+- **Frontend:** unit 63/63; the new order test fails if the page re-sorts
+  by net. `tsc -b` passes; production build `index-0LZfF9Tl.js`.
+- **Playwright:**
+  - Focused explicit-drop set: 3/3 desktop and 3/3 mobile. Supported card
+    before a higher-net WATCH, each card's decision, the fixed drop,
+    "Analyze option" opening the exact pair (add 3 / drop 4), keyboard focus
+    return, axe, overflow, GET only.
+  - Full suite: 22/22 desktop and 22/22 mobile.
+
+### Pre-deployment real-data acceptance (read-only, guarded, same persisted snapshot)
+
+- **Freshness:** within limits. Yahoo evidence is current until 2026-11-15
+  08:31 UTC, and the Pacific date had not changed.
+- **No recommendation change:** board, transactions and impact equal the
+  deployed engine path for path in Rest of Week, Next 7 Days and Rest of
+  Season Outlook. Next 14 Days differs only in the intent sentence.
+  Decisions:
+  - Rest of Week: ADD Jerami Grant / DROP Bones Hyland +0.728 (STREAM).
+  - Next 7 Days: STREAM Grant / DROP Kris Dunn +1.035.
+  - Next 14 Days: STREAM Grant / DROP Zach LaVine +0.962 (TWO-WEEK STREAM).
+  - Rest of Season Outlook: ADD Derrick Jones Jr. / DROP Hyland +0.455
+    (LONGER-TERM ADD).
+- **Contracts:**
+  - Board = optimizer and the exact-pair contract hold in all four horizons.
+  - The recommendation invariant passes.
+  - Jrue Holiday and the O/OFS/NA players stay excluded (299 eligible, 272
+    `EXCLUDED_STATUS`), and no manager player appears as an add.
+- **Explicit drop for the optimizer's drop:**
+  - Rest of Week (Hyland): DeRozan, Santi Aldama and Kelly Oubre Jr. (all
+    WATCH) become Grant ADD +0.728, Cam Spencer ADD +0.673 and Bilal
+    Coulibaly ADD +0.554.
+  - Next 7 Days (Dunn): WATCH DeRozan +1.130 is no longer first; Grant
+    STREAM +1.035 is.
+  - Next 14 Days (LaVine): the third card, WATCH Isaiah Stewart, becomes
+    STREAM GG Jackson.
+  - Rest of Season Outlook: unchanged.
+- **All 60 explicit-drop lists** (15 roster drops × 4 horizons):
+  - Tiers and within-tier nets are ordered, the drop is fixed, the first
+    supported row is the best add, and the top measured option is listed.
+  - Previously 12 of the 18 drops with supported moves showed an
+    unsupported row in a slot a supported move should fill; now none do.
+- **Guard and database:** 340 statements, all reads, 0 provider calls. The
+  database snapshot is identical before and after, and identical to the
+  post-deployment snapshot.
+
+### Deployment (2026-11-15 02:13-02:37 UTC)
+
+- **Gate:**
+  - The running API differed from the worktree only in `service.py`.
+    `build_board` and `move_intent` changed, and `replacement_order` and
+    `_series` were added.
+  - Every scoring, gate, optimizer and invariant definition is identical at
+    the AST level. This covers `evaluate_pair`, `pair_order`,
+    `classify_action`, the invariant asserts and `ACTION_RANK`.
+  - Since the Phase-6 build only `service.py`, `WaiverCenter.tsx` and three
+    test files changed. Every code edit predates the validation runs, and
+    `WaiverCenter.tsx` still has its validated hash.
+  - `migrations.py` is unchanged: 6 migrations, newest
+    `0006_observer_connections`.
+- **Baseline (read-only):** production answered the four decisions above.
+  - Its responses equal the post-Phase-6-deploy capture (21:32 UTC) path
+    for path.
+  - The explicit-drop defect was live: drop Hyland listed WATCH DeRozan,
+    Aldama and Oubre Jr. before Grant ADD.
+  - The database snapshot equaled the post-Phase-6-deploy snapshot.
+  - The first cold board read returned 504 three times while the idle API
+    paged in from swap. Warm, every read returned 200.
+- **Backup:** `~/fantasy-gm-pre-phase6-cleanup-20261115T022755Z.dump`
+  (138 MB, mode 0600).
+  - `pg_restore --list` is readable and lists 29 TABLE DATA entries.
+  - The object inventory equals the `pre-phase6` backup's.
+  - All 29 tables' COPY row counts (80,850 rows) equal the live database.
+- **Rollback tags:**
+  - `fantasy-basketball-gm-api:pre-phase6-cleanup`: index `fb6a46820a23`,
+    linux/amd64 `626f53d9872c`.
+  - `fantasy-basketball-gm-frontend:pre-phase6-cleanup`: index
+    `8d8cc82876f3`, linux/amd64 `d32d8baab1ab`.
+  - Docker's containerd image store can give a cached rebuild a new image
+    index while keeping the platform manifest. The previous containers'
+    recorded index IDs (`24849b33dec4`, `eaf77184ba67`) no longer resolved.
+    So the tags were matched to the running containers' recorded platform
+    manifests and proven byte-identical in content (70 API files, 26 html
+    files).
+  - The earlier `pre-phase5`, `pre-acceptance-fixes` and `pre-phase6` tags
+    are unchanged.
+- **Build (serial):**
+  - **API:** image index `2e0fb38b2e4b` (linux/amd64 `a3e52763ba8b`).
+    - All 70 `.py` files equal the worktree; versus the previous image only
+      `service.py` differs.
+    - The new Next 14 Days wording is present, the old phrase is absent and
+      the model constant is unchanged.
+  - **Frontend:** image index `a7f00cb72046` (linux/amd64 `2b268cbb7a53`).
+    - Its 25 html files equal the validated `frontend/dist`
+      (`index-0LZfF9Tl.js`, `index-CVxqMg03.css`). The image also has
+      nginx's stock `50x.html`.
+    - Versus production only the JS bundle and `index.html` change. The
+      nginx config is byte-identical.
+- **Recreate:** `docker compose up -d --no-deps api frontend` ran
+  02:36:04-02:36:32 UTC; health returned 200 at 02:36:40.
+  - API container `cdd738a1899e` and frontend `3b6a562ed6d4`.
+  - `db` (`d6a02fc4fe35`) and `caddy` (`08198174d855`) were not recreated.
+  - The running API source equals the worktree, and the running html equals
+    the validated build.
+  - nginx resolves the new API, and Caddy serves `index-0LZfF9Tl.js`.
+- **Rollback:** retag the `pre-phase6-cleanup` images as `latest` and
+  recreate only `api` and `frontend`. The cleanup made no database change.
+
+### Post-deployment acceptance (read-only, GET only)
+
+- **Same engine, same snapshot:** all 20 deployed reads returned 200 with
+  `waiver-horizon-evidence-phase6`. They cover board, transactions,
+  replacements for the optimizer drop and impact with and without the drop,
+  in four horizons. Every one equals the validated local harness output
+  path for path.
+- **No recommendation change versus pre-deploy production:**
+  - Rest of Week, Next 7 Days and Rest of Season Outlook have 0 changed
+    paths on board, transactions and impact.
+  - Next 14 Days changes only `move_intent_detail`, to the new sentence.
+  - Every replacement row present before and after has identical facts.
+    Only the explicit-drop list's order and membership changed.
+- **Deployed decisions** (persisted 2026-11-14 08:31–08:33 UTC snapshot):
+  - Rest of Week: ADD Grant / DROP Hyland +0.728 (STREAM).
+  - Next 7 Days: STREAM Grant / DROP Dunn +1.035.
+  - Next 14 Days: STREAM Grant / DROP LaVine +0.962 (TWO-WEEK STREAM).
+  - Rest of Season Outlook: ADD Jones Jr. / DROP Hyland +0.455
+    (LONGER-TERM ADD).
+  - Context: roster 13/13 regular, IL 2/3, ADD + DROP required, 2 of 4
+    weekly adds used, waiver priority 4th.
+- **Contracts:** board = optimizer and the exact pair hold in all four
+  horizons (optimizer = board = replacements = impact, with and without the
+  drop). The recommendation invariant passes.
+- **Compare a Specific Drop, all 60 lists** (15 roster drops × 4 horizons,
+  fetched from production):
+  - Every list equals the validated audit.
+  - Each list is ordered by decision tier, then net, then player ID.
+  - The selected drop is fixed in every comparison.
+  - The first supported row is that drop's best add, and the top measured
+    option is listed.
+  - WATCH rows stay WATCH. No unsupported row holds a supported slot;
+    before, 12 of the 18 drops with supported moves had one.
+  - Rest of Week (Hyland): Grant ADD +0.728, Cam Spencer ADD +0.673, Bilal
+    Coulibaly ADD +0.554. The top measured option is still named: WATCH
+    DeMar DeRozan +0.847.
+  - Next 7 Days (Dunn): Grant, Spencer and Coulibaly, all STREAM. Top
+    measured: WATCH DeRozan +1.130.
+  - Next 14 Days (LaVine): Grant, Spencer and GG Jackson, all STREAM.
+- **Wording:** across the 80 deployed waiver responses (20 surfaces and 60
+  drop lists), the old phrase occurs 0 times and the new sentence 61 times.
+- **Safety:**
+  - 299 eligible and 272 `EXCLUDED_STATUS`.
+  - Ariel Hukporti, Ben Simmons and Henri Veesaar are `EXCLUDED_STATUS`
+    with "EXCLUDED (YAHOO O/OFS/NA)".
+  - Jrue Holiday's impact returns 409 "already rostered", and he appears
+    nowhere.
+  - None of the 158 players rostered by other teams appears in any list,
+    and no manager player is an add.
+  - Status labels pass.
+- **Deployed page:** desktop 4/4 (1440 × 1000) and mobile 4/4 (390 × 844).
+  - Covered: the current-evidence panel (REFRESH never activated), TEAM
+    SITUATION, BEST MOVES = the optimizer pair in all four horizons, the
+    new Next 14 Days sentence, WATCH text, the full list (299), advanced
+    evidence and structured 504/409 errors.
+  - The explicit-drop flow ran in three horizons: supported cards first,
+    the top measured line, the fixed drop, "Analyze option" opening the
+    exact pair, and keyboard focus return.
+  - axe found 0 violations. Page `scrollWidth` equals the viewport
+    everywhere, including the 390 px roster-capacity expansion. GET only.
+  - Three test runs failed for environment reasons, not product defects,
+    and each passed when rerun alone:
+    - On desktop, the first cold page load's refresh-status read hit its
+      30 s client timeout while board and transactions spent ~40 s loading
+      under IO pressure.
+    - On mobile, two tests ran into the host stall below.
+- **Host stall (incident, 03:04-03:32 UTC):** during the mobile run the API
+  stopped answering.
+  - The host saturated its single rotational disk: 85% utilization at about
+    114 reads/s, with the swap file on the same disk (2.8-3.0 GB used) and
+    IO pressure "full" averaging 74% over 5 minutes.
+  - Health timed out, and nginx returned 504 to waiver reads and to the
+    external observer polls.
+  - The API kept working on abandoned read-only requests at page-fault
+    speed.
+  - Only the `api` container was restarted (same container and image) at
+    03:31:57. Health returned 200 at 03:32:33, and a Rest of Week board
+    read took 5.2 s.
+  - No data was involved; every request was a GET. The deployed code was
+    not implicated: the stall was in the unchanged data-load phase.
+- **Database and logs:**
+  - Identical before and after: the database snapshot (counts, newest
+    import/update timestamps, `schema_migrations`, and write counters
+    including the `yahoo_credentials` OAuth canary) and all 29 table row
+    counts.
+  - The API logged 162 request timings, all GET. nginx logged only GETs,
+    including about 800 observer polls.
+  - Every non-200 is accounted for: 502 only in the deploy and restart boot
+    windows, 504 in the stall, 499 for aborted reads, and one designed 409
+    (Jrue).
+- **Freshness:** no refresh job exists, and every evidence stage is current
+  with unchanged timestamps (Yahoo 2026-11-14 08:31:32–08:31:50 UTC, NBA
+  08:32:14 UTC). Yahoo evidence goes stale at 2026-11-15 08:31 UTC.
+
+# Phase 6 Deployed and Verified — 2026-11-14 (production)
+
+Historical record. Production runs this release plus the ordering and wording
+cleanup deployed at 2026-11-15 02:36 UTC (CURRENT STATE above, same model
+version). That deployment resolved this record's explicit-drop ordering and
+Next 14 Days wording limitations.
+
+
+**STATUS: DEPLOYED AND VERIFIED (2026-11-14 21:30 UTC).** Model
+`waiver-horizon-evidence-phase6` is in production. It ships the
+board/optimizer reconciliation, Next 14 Days, Rest of Season Outlook, form
+windows, the tiered recent sample, move intent and the user-approved NO
+CURRENT YAHOO DESIGNATION status policy, unchanged from the validated
+worktree. This was an application-only deployment: no migration, refresh,
+provider call, OAuth, Yahoo transaction, database change, commit or push.
+The decisions below are hypothetical analysis of the persisted 08:31–08:33
+UTC snapshot; confirm in Yahoo before acting.
+
+### Deployment
+
+- **Pre-deployment gate:**
+  - The worktree, API and frontend all use `waiver-horizon-evidence-phase6`.
+  - The running API differed from the worktree in exactly 7 waiver/status
+    files (6 changed plus the new `sample.py`).
+  - `migrations.py` and every ORM model are unchanged: 6 migrations, newest
+    `0006_observer_connections`.
+  - Final serial validation: backend focused 286 and full 464 passed;
+    frontend `tsc -b`, production build and unit 62/62; Playwright 21/21
+    desktop and 21/21 mobile (axe, keyboard/focus, overflow and structured
+    errors).
+- **Baseline (read-only):**
+  - Phase 5 (api `8801dc6f2a30`, frontend `319641cf6a70`) answered HOLD in
+    all three of its windows.
+  - The database snapshot was identical to the one taken at the start of
+    the Phase-6 work.
+  - The first three heavy baseline reads returned 504 at 60 s while the
+    idle API paged back in from swap (health alone took 12 s). Retried
+    warm, they answered in 2.6-4 s. This was host pressure, not an
+    application defect.
+- **Backup:** `~/fantasy-gm-pre-phase6-20261114T212327Z.dump` (138 MB, mode
+  0600, custom format, 176 TOC entries, 29 TABLE DATA entries). `pg_restore`
+  read the whole archive, the 29-table inventory matched, and every table's
+  row count matched the live database.
+- **Rollback tags:** `fantasy-basketball-gm-api:pre-phase6` =
+  `8801dc6f2a30`; `fantasy-basketball-gm-frontend:pre-phase6` =
+  `319641cf6a70`. No `pre-phase6` tag existed before.
+- **Build (serial):**
+  - API image `24849b33dec4`: its source equals the worktree (70 files,
+    SHA-256).
+  - Frontend image `eaf77184ba67`: its bundle equals the validated build
+    (25 files, `index-DogvR0PR.js` / `index-CVxqMg03.css`), and its nginx
+    config is byte-identical.
+  - Both expect `waiver-horizon-evidence-phase6`.
+- **Recreate:** `docker compose up -d --no-deps api frontend` ran
+  21:29:57-21:30:32 UTC; health returned 200 at 21:30:43.
+  - API container `f86c185c5b33` and frontend `5745e02cf00f`, 0 restarts.
+  - `db` (`d6a02fc4fe35`) and `caddy` (`08198174d855`) were not recreated.
+  - Startup ran no migration and logged no errors.
+  - nginx resolves the new API; its 7 connection-refused lines fall inside
+    the 10-second boot window.
+- **Rollback:** retag the `pre-phase6` images as `latest` and recreate only
+  `api` and `frontend`. Phase 6 made no database change, so no database
+  rollback is needed.
+
+### Deployed decisions (persisted 2026-11-14 08:31–08:33 UTC snapshot)
+
+| Horizon | Decision | ADD | DROP | Net | Intent |
+|---|---|---|---|---|---|
+| Rest of Week | ADD (ADD + DROP) | Jerami Grant | Bones Hyland | +0.728 | STREAM |
+| Next 7 Days | STREAM (ADD + DROP) | Jerami Grant | Kris Dunn | +1.035 | STREAM |
+| Next 14 Days | STREAM (ADD + DROP) | Jerami Grant | Zach LaVine | +0.962 | TWO-WEEK STREAM |
+| Rest of Season Outlook | ADD (ADD + DROP) | Derrick Jones Jr. | Bones Hyland | +0.455 | LONGER-TERM ADD |
+
+- Supported moves: 40, 66, 40 and 36 respectively. The deployed Phase-5
+  baseline was HOLD in all three of its windows.
+- Every deployed response equals the pre-deploy read-only shadow of the same
+  snapshot, path for path, apart from request-time stamps. This covers the
+  board, transactions, replacements and impact (with and without the drop)
+  in all four horizons, so no change is unexplained.
+- Net gains are on the 0-100 roster index, not fantasy points. Confirm FA or
+  waiver state and roster locks in Yahoo before acting; the app never
+  executes a transaction.
+
+### Acceptance (read-only)
+
+- **Model:** all 20 deployed board, transactions, replacements and impact
+  reads report `waiver-horizon-evidence-phase6`. The page shows no
+  stale-model warning.
+- **Board = optimizer** in every horizon:
+  - Same add, drop, mode, decision, action type and comparison.
+  - Decision support is SUPPORTED_ACTION ("1 supported move available.").
+  - No "0 supported moves", "no supported add yet" or "Next open spot".
+- **Exact pair:** the optimizer, the board row, the replacements for the
+  selected drop and the impact with that drop all agree. So does the impact
+  without a drop. The checked fields:
+  - IDs, mode, decision and action type.
+  - Before, after and net index; component before, after and deltas;
+    effective weights.
+  - Gates, status, sample, role, schedule and form.
+  - The drop's evidence is also identical on the board and in the
+    replacements.
+- **Horizons vs form:**
+  - Last 7/14/30 Days end on or before today, and every horizon's schedule
+    starts today (Next 14 Days ends 2026-11-27).
+  - Schedule coverage is only PARTIAL or UNKNOWN, and no value is
+    zero-filled or invented.
+  - Rest of Season Outlook says there are no projected fantasy totals.
+- **Sample tiers:**
+  - Every tier matches its game count. No VERY LOW or INSUFFICIENT sample
+    passes, and every promoted LIMITED sample meets the full rule.
+  - DeMar DeRozan: VERY LOW (4 games), never supported.
+  - Kris Dunn: LIMITED, corroborated by 11 games in 30 days and FP/G −9.5%.
+  - Bones Hyland: LIMITED, corroborated by 12 games in 30 days, a STABLE
+    role and minutes +3.7.
+  - All three are SUPPORTED in Rest of Season Outlook.
+- **Status policy:**
+  - 425 of 426 missing status fields read NO CURRENT YAHOO DESIGNATION with
+    the exact non-health detail.
+  - No label says healthy, active, cleared or injury-free; Q and P stay
+    UNCERTAIN.
+  - There are 0 supplied blanks and 0 stale records.
+  - Blake Wesley (unresolved identity) stays UNKNOWN, gate-blocked and not
+    comparable.
+  - The other fail-closed states have no real occurrences; the backend
+    tests cover them.
+- **Safety:**
+  - 299 eligible and 272 `EXCLUDED_STATUS`.
+  - Ariel Hukporti, Ben Simmons and Henri Veesaar are `EXCLUDED_STATUS`.
+  - Jrue Holiday is `ROSTERED_BY_OTHER_TEAM` (the impact read refuses him
+    with 409 as rostered) and appears on no surface.
+  - No manager player appears as an add, and no featured ID falls outside
+    `eligible_candidate_ids`.
+  - Roster 13/13 regular, IL 2/3; 2 of 4 weekly adds used (2 remaining);
+    waiver priority 4th. These are context only.
+- **Deployed page through Caddy (TLS validated):** desktop 1440×1000 passed
+  4/4 and mobile 390×844 passed 4/4. Checked:
+  - The four horizons, each showing the optimizer pair with its intent and
+    form.
+  - Details that lead with the ROSTER DECISION, then Last 7/14/30, Season
+    and Previous Season, with keyboard focus returning to the opener.
+  - The full list with the Last 14 sort, and ADVANCED EVIDENCE.
+  - Recovery from a simulated 504 and 409 without HTML, HOLD or a stale
+    move.
+  - Compare-a-drop requests the exact drop.
+  - axe found 0 violations, page width equals the viewport in every state,
+    and only GET requests were sent.
+- **Database and logs:**
+  - The database is identical before and after: all 29 tables' row counts,
+    newest import/update timestamps, migrations and write counters
+    (`yahoo_credentials` updates unchanged).
+  - Since the deploy: 70 API requests, all GET (one designed 409), and 713
+    nginx requests, all GET.
+  - No refresh job exists. The panel reads "All waiver evidence current as
+    of: November 14, 2026 at 12:32 AM PST" from persisted evidence.
+
+### Remaining limitations
+
+- The decisions rest on the 08:31–08:33 UTC snapshot. Yahoo evidence goes
+  stale 24 hours after import (2026-11-15 08:31 UTC), and the Pacific date
+  changes at 08:00 UTC. After a user-initiated refresh the decisions can
+  change.
+- COMPARE A SPECIFIC DROP ranks a chosen drop's replacements by net index,
+  so WATCH players (DeRozan +0.847) can precede the supported Grant
+  (+0.728). Each card shows its backend decision; this ranking predates
+  Phase 6. (Resolved: the cleanup deployed 2026-11-15 02:36 UTC ranks
+  supported moves first.)
+- The Next 14 Days intent reads "by schedule and opportunity and the
+  persisted two-week schedule" (redundant wording, cosmetic). (Resolved by
+  the same deployment.)
+- Evidence limits are unchanged:
+  - No game-level usage or per-game starts.
+  - Schedule coverage is PARTIAL, never COMPLETE.
+  - Yahoo does not state FA/waiver ownership (UNROSTERED — CONFIRM IN
+    YAHOO), and claim-clear times are unsupported.
+  - Evidence is historical, never a projection, and a status is never a
+    health claim.
+- Host capacity: an idle API is swapped out, so its first heavy reads can
+  return 504 until it pages back in.
+
+# Waiver Horizons & Evidence (Phase 6) — Implementation and Pre-Deployment Acceptance — 2026-11-14
+
+Historical pre-deployment record; the release was deployed unchanged at 21:30
+UTC (CURRENT STATE above).
+
+
+**STATUS: IMPLEMENTED AND VALIDATED LOCALLY, NOT DEPLOYED.** Model
+`waiver-horizon-evidence-phase6`. The local working tree also carries the
+user-approved NO CURRENT YAHOO DESIGNATION policy (record below, unchanged).
+The running system is unchanged: Phase 5 plus the four acceptance fixes (api
+`8801dc6f2a30`, frontend `319641cf6a70`, model `waiver-availability-phase5`).
+Everything in this record was local or read-only: no deployment, rebuild,
+container change, refresh, provider call, OAuth, migration, database write,
+Yahoo transaction, commit or push. A deployed Phase-5 response shown to the
+Phase-6 page (or the reverse) fails closed on the model version.
+
+### What changed (local)
+
+1. **Board = optimizer.** Root cause of the Next 7 Days contradiction: the
+   board judged each add only against its highest-net drop (Grant vs Kris
+   Dunn, then sample-gated), while the optimizer searched every pair. Both
+   now use one pair judgment (`evaluate_pair`) and one ordering
+   (`pair_order`). On a full roster the board's `best_add_for_team_id` and
+   new `best_drop_for_team_id` are the optimizer's best supported pair by
+   construction, and the best add is always in the board's candidates. If a
+   response ever disagrees, BEST MOVES shows a contract error instead of two
+   answers. A full roster never shows "Next open spot" or a measured card
+   beside a supported pair. No gate changed.
+2. **Next 14 Days** (`mode=next_14_days`): Pacific today through today + 13,
+   a forward schedule window, never Last 14 Days form. It is consistent
+   across board, transactions, replacements, impact, decision support,
+   schedule counts, team-needs date gaps, explanations and the page.
+3. **Rest of Season Outlook** is the page label for `mode=ros` (API mode
+   unchanged). Season Evidence remains the name of the historical evidence;
+   the remaining persisted schedule is shown, never projected totals.
+4. **Form windows are look-back evidence, not horizons:** Last 7, 14 and 30
+   Days, Current Season and Previous Season. Each shows games, Yahoo FP/G
+   (strict scoring fields, never zero-filled), minutes average and median,
+   sample tier, dates and freshness. Starts and usage appear only for season
+   windows with explicit provenance; log windows never invent them. The trend
+   compares Last 14 Days with days 15-30 (non-overlapping, 3+ fresh games
+   each side) and needs PPG (±30%) and minutes (±3.0) to agree: IMPROVING,
+   DECLINING, MIXED or STABLE. It is descriptive and never a gate.
+5. **Tiered recent sample** (`app/features/waivers/sample.py`) replaces the
+   hard 7-game cliff without weakening other gates:
+   - SUPPORTED (7+ relevant games) is the unchanged rule.
+   - LIMITED (5-6 games in the last 14 days) passes in Rest of Week, Next 7
+     Days and Next 14 Days only with 7+ current-season games, fresh
+     production, a qualified current role (3 valid fresh games each side),
+     and at least 2 of 4 independent corroborations: 10+ games in the last 30
+     days; role STABLE or RISING; Last 14 vs Last 30 FP/G within 13% (3+
+     earlier games, both windows fresh); and a minutes change above -3.0.
+   - Current-season games are not a corroboration. The first version also
+     counted "10+ games this season", but Last 30 Days games are a subset of
+     the season's games, so the same games counted twice. Found during this
+     acceptance and removed; on current data no promotion depended on it
+     (the same 40 players and decisions before and after).
+   - VERY LOW (3-4) and INSUFFICIENT (0-2) never pass; positive pairs stay
+     WATCH.
+   - Rest of Season Outlook never corroborates a LIMITED season sample with
+     older seasons.
+   - Status, identity, availability, positive impact, O/OFS/NA and Q/P are
+     unchanged. A failing LIMITED sample is named exactly: for example "Kelly
+     Oubre Jr. 5 games in the last 14 days (LIMITED SAMPLE: 2 of 4
+     corroborations passed, 2 needed; missing requirement: qualified current
+     role)". (The first wording, "not corroborated, 3 of 2 corroborations",
+     was corrected during this acceptance.)
+6. **Move intent** (descriptive; never changes a decision): supported moves
+   are STREAM (Rest of Week, Next 7 Days), TWO-WEEK STREAM (Next 14 Days) or
+   LONGER-TERM ADD (Rest of Season Outlook, or an ADD with longer-term
+   Season Evidence). Everything else is WATCH, HOLD or INSUFFICIENT
+   EVIDENCE. When the persisted schedule has no games for the add in the
+   horizon, the detail says the support is production and roster fit, not
+   the schedule (a zero is never asserted).
+7. **Page:** four horizon radios; intent badge and form lines on move cards.
+   VIEW DETAILS leads with ROSTER DECISION (ADD, DROP, NET, WHY,
+   BLOCKERS), then RECENT FORM, SEASON EVIDENCE, UPCOMING SCHEDULE (Next 7,
+   Next 14, rest of season) and the recent-sample gate. The FULL WAIVER LIST
+   adds form and Next 7 / 14 columns and exploratory sorts (Last 7/14/30
+   Days, Season, Next 7/14 Days) that never change BEST MOVES or the backend
+   rank. ADVANCED EVIDENCE adds the supported-move count and the sample
+   policy.
+
+### Sample audit (read-only, persisted logs, Pacific 2026-11-14)
+
+- The regular season began 2026-10-20, so Last 30 Days is the whole season.
+  In the Last 14 Days window 10 of 30 teams played only 5-6 games (distinct
+  logged game IDs); of 133 rotation players with 5-6 games, 62 played every
+  team game. The hard cliff therefore blocked full-time players.
+- 80th percentile of |FP/G 14 - FP/G 30| / FP/G 30 for well-sampled players
+  (n = 114): 13.0% (bootstrap 90% CI 11.1-15.4%), the corroboration
+  tolerance. The 90th percentile was unstable (14.9-24.9%).
+- Non-overlapping change (Last 14 vs days 15-30), 75th percentile about 29%
+  (CI 26-32%): the 30% trend threshold. Minutes change of -3.0 or less: 12-18%
+  of players (the existing role threshold, reused).
+
+### Real-data acceptance (read-only, local source, one snapshot per run)
+
+CONTROL swaps only the recent-sample gate back to the hard seven-game rule on
+an identically loaded context (same status policy and all other inputs).
+
+| Horizon | CONTROL (hard seven) | Phase 6 (tiered) | Supported moves |
+|---|---|---|---|
+| Rest of Week | **HOLD** (0 supported, 83 WATCH) | **ADD Jerami Grant / DROP Bones Hyland +0.728** (STREAM) | 0 → 40 |
+| Next 7 Days | STREAM Grant / Zach LaVine +0.649 | **STREAM Grant / DROP Kris Dunn +1.035** (STREAM) | 9 → 66 |
+| Next 14 Days | STREAM Grant / LaVine +0.962 | **STREAM Grant / DROP LaVine +0.962** (TWO-WEEK STREAM) | 12 → 40 |
+| Rest of Season Outlook | ADD Derrick Jones Jr. / Bones Hyland +0.455 | **identical** (LONGER-TERM ADD) | 36 → 36 |
+
+- Index gains are on the 0-100 roster model, not fantasy points. Adds are
+  unrostered in complete current snapshots; confirm FA/waiver state and
+  roster locks in Yahoo before acting.
+- Transitions: Rest of Week 40 WATCH → supported; Next 7 Days 57 WATCH →
+  supported and 9 WATCH → INSUFFICIENT EVIDENCE (their sample now passes and
+  the unchanged STREAM role/schedule gate blocks them); Next 14 Days 28 WATCH
+  → supported. No pair lost support in any horizon.
+- Why the drops differ by horizon: the drop with the most to give is the
+  lowest-value roster player on that horizon's evidence (Hyland Rest of
+  Week and Rest of Season Outlook, Dunn Next 7 Days, LaVine Next 14 Days).
+- Named players:
+  - Bones Hyland: 6 games in 14 days, 12 this season, role STABLE;
+    corroborated by 12 games in 30 days, role and minutes (+3.7): 3 of 4.
+    FP/G +25% fails the tolerance. Form IMPROVING.
+  - Kris Dunn: 6 / 11, role FALLING (qualified); corroborated by 11 games
+    in 30 days and FP/G (-9.5%, inside 13%): exactly 2 of 4. Minutes -4.7
+    fails. Form DECLINING.
+  - DeMar DeRozan: 4 games in 14 days, VERY LOW, never supported (WATCH).
+  - Derrick Jones Jr.: weekly LIMITED, not promoted (3 of 4 corroborations
+    but no qualified role); SUPPORTED in Rest of Season Outlook (10 games).
+- 107 LIMITED players (adds and your roster) in the weekly horizons; 40
+  corroborated (12 with 4 of 4 corroborations, 19 with 3, 9 with exactly 2),
+  including your Hyland, Jarrett Allen, Julius Randle, Dunn, P.J. Washington
+  and Pascal Siakam. Of the 67 not promoted, 49 lack only a qualified role,
+  11 also lack 7+ season games and 7 have fewer than 2 corroborations. Rest
+  of Season Outlook: 41 LIMITED, 0 corroborated.
+- Equality: board, optimizer, replacements (fixed drop) and impact (with
+  and without the drop) agree on the best pair's comparison and decision in
+  every horizon. Repeat runs are identical except the request-time
+  `generated_at` and `data_quality.overall_score.as_of`.
+- Unchanged: roster 13/13 regular, IL 2/3, ADD + DROP required; 2 of 4
+  weekly adds used (2 remaining); waiver priority 4th; 299 eligible and 272
+  `EXCLUDED_STATUS`; Ariel Hukporti, Ben Simmons and Henri Veesaar excluded;
+  Jrue Holiday `ROSTERED_BY_OTHER_TEAM` and on no surface.
+- Guard: 339 statements, all reads, 0 blocked, 0 provider calls; 14
+  statements per context load (no N+1). Load 3.7-7.0 s per horizon (Rest of
+  Season Outlook slowest), optimizer 0.8-1.3 s, board 0.1-0.5 s on this host.
+  The database snapshot is identical before and after every run.
+- Payload: the board grew about 20-24% (Rest of Week 1.17 → 1.45 MB;
+  transactions 424 → 590 KB) from per-candidate form and sample evidence.
+
+### Validation
+
+- Backend: 464 passed, including the board/optimizer regression (fails
+  before the fix), the double-count regression (two cases pass only with
+  the removed check) and the real-data wording and intent regressions.
+- Frontend: unit 62/62 (the fail-closed pair check fails with the fix
+  reverted), `tsc -b` and production build pass.
+- Fixture Playwright: 42/42, desktop 1440×1000 and mobile 390×844, run
+  serially.
+- Real-data page render (local dev frontend, real read-only engine responses,
+  nothing deployed): every horizon shows the agreeing pair with its intent
+  and form, VIEW DETAILS keeps focus and returns it, no page or dialog
+  overflow at 390 px, axe clean, the Last 14 Days sort orders the list
+  without changing BEST MOVES, no Jrue Holiday or OFS player anywhere, zero
+  non-GET requests.
+
+### Observations for the next decision
+
+- The 13% FP/G tolerance decides exactly one promotion: Kris Dunn (-9.5%).
+  Dunn is the Next 7 Days drop, so that best move depends on the tolerance
+  (CONTROL's Grant / LaVine +0.649 is the hard-seven alternative).
+- A 5-game sample cannot qualify a 3 + 3 role inside 14 days, so in practice
+  only 6-game samples are promoted.
+- The FP/G tolerance is symmetric: a hot Last 14 Days drop is protected
+  (conservative), a hot Last 14 Days add is not.
+- 0-2-game positive pairs still show as WATCH when the player has
+  current-season games (unchanged behavior).
+
+### Deployment recommendation
+
+Deploy the whole release together (status policy, board reconciliation,
+horizons, form windows, tiered sample, intent, model version) only with
+explicit approval. It is a material behavior change for your roster: Rest of
+Week moves from HOLD to ADD Grant / DROP Hyland and Next 7 Days from dropping
+LaVine to dropping Dunn. Every promotion is explained by backend evidence, no
+invariant changed, and the evidence is reproducible. Before 2026-11-15 08:00
+UTC the deployed result can be verified exactly against this record (same
+persisted data and Pacific date); later, or after any refresh, rerun the
+read-only shadow first and verify against it.
+
+# Fresh Missing Yahoo Status: User-Approved Policy — 2026-11-14 (local; carried into Phase 6)
+
+Deployed with Phase 6 at 21:30 UTC (CURRENT STATE above); the record below is
+the pre-deployment history.
+
+**STATUS: IMPLEMENTED AND VALIDATED LOCALLY, NOT DEPLOYED.** On 2026-11-14
+the user explicitly approved overriding the REJECT decision recorded below: a
+fresh Yahoo player record whose `status` key is absent now means **NO CURRENT
+YAHOO DESIGNATION** and may pass the Yahoo status gate, but only when every
+condition below holds. It is never a medical-health claim. The running system
+is unchanged: Phase 5 plus the four acceptance fixes (api `8801dc6f2a30`,
+frontend `319641cf6a70`, model `waiver-availability-phase5`), which still
+treat every blank status as UNKNOWN. Everything in this record was local or
+read-only: no refresh, deployment, rebuild, provider call, OAuth, migration,
+database write, Yahoo transaction, commit or push.
+
+### Policy (local working tree)
+
+Label **NO CURRENT YAHOO DESIGNATION**; detail "Yahoo's current player record
+contains no explicit injury/status designation. This is not a
+medical-health guarantee." It is never called healthy, active, cleared or
+injury-free. A missing field qualifies only when all of these hold; the first
+failing condition is reported and the status stays UNKNOWN:
+
+1. A player-pool record exists in the configured league's pool (`PLAYER_OBSERVATION_MISSING`).
+2. It was imported within 24 hours (`STALE_PLAYER_POOL_IMPORT`).
+3. The `status` key is genuinely absent from the record (and from the roster record for your players).
+4. The Yahoo-to-NBA identity is resolved without a team conflict, and the record's Yahoo ID matches the identity (`MAPPING_ISSUE`).
+5. Nothing else carries status evidence: no `status_full`, `injury_note` or truthy `on_disabled_list`, and the stored identity status is empty (`NORMALIZATION_DEFECT`).
+6. Every league roster snapshot is current (`ROSTER_SNAPSHOT_INCOMPLETE`).
+
+Adds must still be actionable (`CONFIRMED_FA`, `CONFIRMED_WAIVER` or
+`UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT`) through the unchanged availability
+gate; your own roster players qualify as drops. A Yahoo-supplied blank,
+unrecognized token, stale record or any failed condition stays UNKNOWN and
+keeps blocking. O/OFS/NA stay excluded and Q/P uncertain. The sample rule,
+shrinkage, weights, availability classes, roster capacity, invariant, scoring
+formula and acquisition logic are unchanged.
+
+`interpret_yahoo_status()` in `app/services/draft/player_status.py` is the only
+interpreter. Each candidate exposes `raw_yahoo_status`, `status_field_state`,
+`decision_status_state` (`EXCLUDED`, `UNCERTAIN`,
+`NO_CURRENT_YAHOO_DESIGNATION`, `UNKNOWN`), `status_reason`,
+`status_gate_supported`, `status_label` and `status_detail`. Defaults fail
+closed. The status gate (`status_gap`, now also used by
+`transaction_blockers`) passes a blank only for a loader-verified designation
+with fresh status evidence. The page shows the backend label and detail.
+ADVANCED EVIDENCE keeps the explicit, Yahoo-blank, status-field-missing and
+stale counts and adds "no current Yahoo designation".
+
+### Real-data acceptance (read-only, local source, one snapshot)
+
+Population (744 pool records): 318 explicit; 426 without a `status` field, of
+which 425 qualify (287 eligible adds, your 12 players, 126 on other teams). The
+remaining one is an eligible add with an unresolved identity and stays UNKNOWN
+(`MAPPING_ISSUE`). There are 0 normalization defects, stale records, supplied
+blanks or incomplete-roster cases. Totals are unchanged: 299 eligible, 272
+`EXCLUDED_STATUS`.
+
+| Window | Decision | Pairs (strong / PASS / WATCH) | Board decision support |
+|---|---|---|---|
+| Rest of Week | **HOLD** | 0 / 240 / 83 (every positive pair fails the sample gate) | BEST MEASURED OPTION DeMar DeRozan (4 games in the last 14 days) |
+| Next 7 Days | **STREAM: ADD Jerami Grant / DROP Zach LaVine (+0.649)** | 9 STREAM (all dropping LaVine) / 227 / 152 | BEST MEASURED OPTION DeMar DeRozan (see finding) |
+| Season Evidence | **ADD: Derrick Jones Jr. / DROP Bones Hyland (+0.455)** | 36 ADD / 2,200 / 4 | SUPPORTED_ACTION; best add Derrick Jones Jr. |
+
+- Index gains are on the 0-100 roster model, not fantasy points. The adds
+  are unrostered in complete current snapshots; confirm FA/waiver state in
+  Yahoo.
+- **Control (the previous gate on the same snapshot): HOLD in every window.**
+  Every newly supported move is 9 in Next 7 Days and 36 in Season Evidence.
+  Each was blocked only because the status field was absent (YES for all 45):
+  the status gate was its sole blocker, and only on no-designation players.
+- **Best-move field table.** Grant/LaVine and Jones/Hyland are identical on
+  every condition, add and drop:
+  - Raw status none; no `status` key in the pool record or your roster record.
+  - Field `STATUS_FIELD_MISSING`; decision `NO_CURRENT_YAHOO_DESIGNATION`; gate passes.
+  - Imported 08:31:50 UTC and fresh; `EXACT_NAME_TEAM`.
+  - Yahoo IDs match (Grant 5350, LaVine 5324, Jones 5747, Hyland 6568).
+  - Identity status empty; no companion status keys; rosters current.
+  - Samples: Grant and LaVine 12 games this season and 7 in Next 7 Days with STABLE role; Jones 10, Hyland 12.
+- **Cross-surface:** the optimizer, replacements (selected drop) and impact
+  agree on decision and comparison for the top three moves in Next 7 Days and
+  Season Evidence. Repeated runs are byte-identical. Service transactions equal
+  the in-process analysis except the request-time `overall_score.as_of`. The
+  recommendation invariant passed for every run.
+- **Unchanged:**
+  - Roster 13/13 regular, IL 2/3, ADD + DROP required.
+  - 2 of 4 weekly adds used (2 remaining); waiver priority 4th.
+  - Jrue Holiday is `ROSTERED_BY_OTHER_TEAM`. His record shows no
+    designation, but he is never eligible and is absent from every list.
+  - Ariel Hukporti, Ben Simmons and Henri Veesaar are `EXCLUDED_STATUS`
+    ("EXCLUDED (YAHOO O/OFS/NA)").
+  - Curry and Markkanen are O, in IL.
+  - The sample gate still fails DeRozan (4), Hyland (6) and Dunn (6 games in
+    the last 14 days).
+  - TEAM SITUATION reads "3 of 15 roster players have an explicit Yahoo
+    status; 12 have NO CURRENT YAHOO DESIGNATION …".
+- **Guard:** 387 statements, all reads; 0 blocked; 0 provider calls. The
+  database snapshot (counts, newest timestamps, write counters) is identical
+  before and after.
+
+### Finding: Next 7 Days board summary disagrees with the optimizer (pre-existing logic, now visible)
+
+**Resolved locally in Phase 6 (see CURRENT STATE above); the original finding follows.**
+
+The board ranks each add against its best-net drop. Jerami Grant's best-net
+drop is Kris Dunn (+1.035), which fails the sample gate (6 games), so the
+board marks Grant WATCH. It then reports BEST MEASURED OPTION DeMar DeRozan,
+"0 supported moves", and board action WATCH. The optimizer searches every
+pair and finds the fully supported Grant/LaVine STREAM.
+
+Rendered with the real responses, BEST MOVES shows that STREAM card, then a
+DeRozan card titled "Next open spot: no supported add yet" on a full roster.
+ADVANCED EVIDENCE says "0 supported moves". Season Evidence is consistent
+(board best add = optimizer best) and Rest of Week holds.
+
+The board logic predates this change; a supported pair never existed before.
+It was left unchanged because this task changes only the status variable.
+
+### Validation
+
+- Backend: 437 passed (31 new cases).
+  - With the policy disabled in a throwaway copy, all 11 positive-path tests
+    fail and the 21 fail-closed tests still pass.
+- Frontend: unit 57/57, `tsc -b` and production build pass.
+- Fixture Playwright: 42/42, desktop 1440×1000 and mobile 390×844. The
+  full-roster pair renders a no-designation drop with its limitation and no
+  page-level overflow.
+
+### Deployment recommendation
+
+**Superseded by the Phase-6 recommendation above.** Not yet. The status policy is ready, but deploying it alone would ship the
+contradictory Next 7 Days page above. First reconcile the board's ADD + DROP
+summary with the optimizer's best supported pair. That is a separate,
+explicitly approved change. Then deploy both together with a model-version
+change, so an older cached page fails closed instead of showing "Unknown"
+beside a supported move.
+
+# Blank Yahoo Status Policy Review — 2026-11-14 (superseded the same day by the user-approved policy above)
+
+**STATUS: POLICY CHANGE REJECTED / STATUS-DIAGNOSTIC CORRECTION VALIDATED
+LOCALLY, NOT DEPLOYED.** A blank Yahoo status stays UNKNOWN and keeps blocking
+strong waiver actions, so decisions are unchanged: HOLD in Rest of Week, Next 7
+Days and Season Evidence. The running system is still Phase 5 plus the four
+acceptance fixes deployed at 11:40 UTC (next record). Everything here was
+read-only: no refresh, deployment, provider call, Yahoo transaction or
+database write.
+
+### Source and persistence audit (read-only PostgreSQL)
+
+- The normalizer stores each Yahoo player record as its merged JSON fragments
+  and adds no keys; `_merge_player_payload` only fills a missing or blank key
+  from another Yahoo observation of the same player. The persisted key set is
+  therefore what Yahoo sent.
+- All 744 pool observations were imported at 08:31:50 UTC (fresh until
+  2026-11-15 08:31 UTC); every row joins its identity by Yahoo ID, and the
+  normalized identity status equals the raw token in 744 of 744 rows. Every
+  roster entry has a pool observation.
+
+| Status-evidence class | Rows |
+|---|---|
+| `EXPLICIT_STATUS` (NA 218, O 77, Q 16, P 4, OFS 3; all with `status_full`) | 318 |
+| `YAHOO_SUPPLIED_BLANK` (key present, blank or null) | 0 |
+| `STATUS_FIELD_MISSING` (no `status` key) | 426 |
+| `PLAYER_OBSERVATION_MISSING` | 0 |
+| `STALE_PLAYER_POOL_IMPORT` | 0 |
+| `MAPPING_ISSUE` (status attached to the wrong identity) | 0 |
+| `NORMALIZATION_DEFECT` | 0 |
+| `UNRECOGNIZED_NONBLANK` | 0 |
+
+- The 426 are complete records: they carry the same 20 core keys as the
+  designated ones and lack only `status`, `status_full` and `injury_note`
+  (115 designated rows have a note), which never appear without `status`.
+  Roster-endpoint records match (138 of 173 have no `status` key, including 12
+  of Box Score Bully's 15).
+- Yahoo omits other optional flags too (`has_player_notes` only ever appears
+  as `1`) but sends some explicitly (`is_undroppable` is `"0"` on all 744), so
+  omission is suggestive, not a documented contract. No raw Yahoo player
+  capture exists locally.
+- SQL NULL does not prove a supplied blank: `player_identity.status` and
+  `source_payload->>'status'` are NULL because the key is absent.
+
+### Decision: REJECT
+
+The proposed policy needs a current record that contains the status field with
+no designation. None exists: Yahoo never supplied a blank status. The persisted
+evidence therefore cannot tell "Yahoo reported no designation" from "status not
+observed", and a missing field stays UNKNOWN. Treating absence as "no
+designation" would be a different policy that needs a documented Yahoo contract
+and explicit approval. O/OFS/NA, Q/P, the sample rule, shrinkage, weights,
+availability classes and roster capacity are unchanged.
+
+### Shadow comparison (read-only, one frozen snapshot, deployed-identical engine)
+
+Only the status-gate predicate differed between runs; a repeated CONTROL run
+was byte-identical to the first, the replicated pair counts matched the engine
+and the recommendation invariant passed for every policy.
+
+| Window | CONTROL: blank = UNKNOWN | PROPOSED: verified supplied blank | Absent field counts, adds only | Absent field counts, adds and your drops |
+|---|---|---|---|---|
+| Rest of Week | HOLD; 0 supported, 83 WATCH | identical (0 players qualify) | HOLD | HOLD; all 83 positive pairs still fail the sample gate |
+| Next 7 Days | HOLD; 0 supported, 152 WATCH | identical | HOLD | STREAM: ADD Jerami Grant / DROP Zach LaVine +0.649 (9 STREAM pairs, all dropping LaVine) |
+| Season Evidence | HOLD; 8 PASS, 4 WATCH | identical | HOLD | ADD: Derrick Jones Jr. / DROP Bones Hyland +0.455 (36 ADD pairs) |
+
+- CONTROL blockers among positive-impact pairs: Rest of Week 83 (sample 83,
+  status 83); Next 7 Days 165 (sample 152, status 165, status alone 13);
+  Season Evidence 43 (status 43, sample 7, production evidence 3, status
+  alone 36). Nonpositive eligible pairs: 3,804 / 3,722 / 3,844; ineligible
+  (O/OFS/NA) add pairs 3,536.
+- Adds-only acceptance changes only nonpositive PASS pairs: 12 of the 13 drop
+  candidates also have no status field, so every positive pair stays blocked.
+- The hypothetical moves pass every non-status gate (both players at least 7
+  games this season and, weekly, 7 in the last 14 days; qualified role for
+  STREAM), but rest entirely on reading absence as no designation for both
+  players. Net gains are +0.01 to +0.65 index points (0-100 roster index, not
+  fantasy points), and the adds are unrostered players whose FA/waiver state
+  must still be confirmed in Yahoo.
+
+### Status-diagnostic correction (validated locally / not deployed)
+
+The waiver diagnostic labeled every blank as `YAHOO_SUPPLIED_BLANK` ("Yahoo
+supplied a blank status"), because `payload.get("status")` is `None` both for a
+supplied null and for a missing key. All 426 production cases were missing
+fields. `player_status.yahoo_status_field()` now classifies the field, the
+waiver service reports `STATUS_FIELD_MISSING` ("The current Yahoo player record
+has no status field, so no designation is recorded; status is UNKNOWN, not
+healthy."), and status coverage counts "status field missing" separately. Both
+remain UNKNOWN; no gate, decision, ranking or score changes.
+
+### Validation
+
+- Backend **406 passed** (two new regression tests, each failing before the
+  correction); frontend unit **56/56**, `tsc -b` and build passed; fixture
+  Playwright **42/42** (desktop 1440 and mobile 390: axe, keyboard focus,
+  overflow, API-error recovery).
+- Exact equality (read-only harness vs live GETs, all three windows: board,
+  transactions, replacements, impact with and without a drop): the deployed
+  code is identical to production in all 15 responses, and the local code
+  differs only in the status-diagnostic fields (request-time stamps excluded).
+  Read-only guard: 214 read statements per equality dump and 46 for the
+  shadow run, 0 blocked, 0 provider attempts.
+- Real-data safety: Jrue Holiday `ROSTERED_BY_OTHER_TEAM`; Hukporti, Simmons
+  and Veesaar `EXCLUDED_STATUS`; Curry and Markkanen O in IL; 13 of 13 regular,
+  IL 2 of 3, ADD + DROP required; 2 of 4 adds left; priority 4th; counts 299 /
+  272 / 158 / 15 = 744; no featured player outside `eligible_candidate_ids`.
+
+# Post-Refresh Acceptance and Patch Deployment — 2026-11-14
+
+**STATUS: PHASE 5 DEPLOYED AND REFRESHED / FOUR ACCEPTANCE FIXES DEPLOYED AND
+VERIFIED (11:40 UTC).** `waiver-availability-phase5` has been in production
+since 2026-11-14 08:26 UTC. The user ran **REFRESH WAIVER DATA** once (job
+`629bd689b6f0`, 08:31:29-08:33:05 UTC, SUCCEEDED); no refresh has run since.
+The four post-refresh acceptance fixes were deployed at 11:40 UTC as an
+application-only patch: same model version, no migration, no data change.
+Every acceptance check was read-only: no second refresh, no provider call, no
+Yahoo transaction, no database write.
+
+### Patch deployment (2026-11-14 11:40 UTC)
+
+- **Backup:** private `pg_dump` custom archive
+  `~/fantasy-gm-pre-acceptance-fixes-20261114T113504Z.dump` (138 MB, mode
+  0600, 176 TOC entries). `pg_restore` read every data block, and all 29
+  tables' row counts matched the live database.
+- **Rollback tags:** `fantasy-basketball-gm-api:pre-acceptance-fixes` and
+  `fantasy-basketball-gm-frontend:pre-acceptance-fixes` point at the images
+  that ran before the patch (`pre-phase5` tags kept). Rollback: tag them back
+  to `:latest`, then `docker compose up -d --no-deps api frontend`.
+- **Deploy:** built `api`, then `frontend`, and recreated only those two (API
+  started 11:40:20, frontend 11:40:22 UTC). `db` and `caddy` kept their
+  containers (started 05:20/05:21 UTC, 0 restarts). API startup ran the
+  existing idempotent schema check; `schema_migrations` is unchanged (6
+  revisions, newest from 2026-10-18).
+- **Source identity:** before the deploy, the running API differed from the
+  worktree in exactly the six fix files, and the worktree with the two
+  frontend fixes reverted rebuilt the running bundle byte for byte (25 build
+  files). After the deploy, the running API source equals the worktree (69
+  files) and the running bundle equals the validated build
+  (`index-fQW2Lt12.js`, `index-BZ8KPD4v.css`); nginx config unchanged.
+- **No refresh, no write:** every table's row count, newest `imported_at` /
+  `updated_at` and write counters were identical before the deploy, after it
+  and after page acceptance. nginx logged only GET requests (764) after the
+  deploy; the API holds no refresh job.
+
+### Verified after the patch (deployed API and page, read-only)
+
+- **OFS:** Ariel Hukporti, Ben Simmons and Henri Veesaar are
+  `EXCLUDED_STATUS`, "EXCLUDED (YAHOO O/OFS/NA)", "Current Yahoo status: Out
+  For Season", and are absent from `eligible_candidate_ids` and from every
+  board and transactions response in all three windows. Eligible 299 (was
+  302), `EXCLUDED_STATUS` 272 (was 269), other teams 158, manager 15;
+  refresh evidence "318 explicit statuses".
+- **Jrue Holiday:** `ROSTERED_BY_OTHER_TEAM` (Pick And Roll, BN); absent from
+  every response and page section; his impact request returns 409 "Player
+  is already rostered in the selected league".
+- **Gate text:** WATCH pairs read, for example, "Sample gate: DeMar DeRozan 4
+  games in the last 14 days; Bones Hyland 6 games in the last 14 days" and
+  "Yahoo status gate: DeMar DeRozan blank (UNKNOWN); Bones Hyland blank
+  (UNKNOWN)"; Season Evidence reads "Sample gate: Max Strus 5 games this
+  season". The page shows the backend's exact strings (compared with the API
+  response in the browser in every window).
+- **Refresh verification:** `GET /api/v1/waivers/refresh` reports NBA season
+  stats as "467 regular-season rows (2026-27)".
+- **Mobile:** at 390 x 844 with "Why? Roster capacity details" (and the team
+  needs details) open, `scrollWidth` = `innerWidth` = 390 (was 589).
+- **Decisions unchanged:** HOLD in all three windows with the same best
+  measured option, groups, watchlists and WATCH pairs (same net values) over
+  7,423 pairs; capacity 13 of 13 regular, IL 2 of 3, ROSTER FULL, 2 of 4 adds
+  left, waiver priority 4th. One Season Evidence reason count moved from
+  7,143 to 7,140 pairs because OFS is now a recognized status.
+- **Page acceptance (GET-only):** desktop 1440 x 1000 5/5 and mobile 5/5,
+  axe 0 violations, keyboard focus return, no raw 504 HTML, no page-level
+  overflow, 0 non-GET requests.
+- **Refresh panel after the recreate:** the job record lived in API memory,
+  so the panel now reads "All waiver evidence current as of: November 14,
+  2026 at 12:32 AM PST" (source `persisted_evidence`, all 9 sources current)
+  instead of "Last successful complete refresh". This is by design; no
+  refresh was run.
+- **Host capacity:** the host thrashed again during page acceptance (I/O
+  full pressure up to about 60%). Some reads took 389 s and nginx returned
+  504s at 60 s; one board read returned 500 when asyncpg's 60 s connect
+  timeout expired while the new API container opened a database connection.
+  Tests rerun on a quiet host passed. Not a code regression; no timeouts were
+  raised.
+
+### Phase 5 deployment (08:26 UTC)
+
+- `api` and `frontend` were recreated 08:26 UTC (API started 08:26:53, 0
+  restarts); `pre-phase5` rollback image tags exist. At the start of
+  acceptance the running API source was byte-identical to the worktree (69
+  files, SHA-256), nginx config identical, and the frontend bundle identical
+  when built with the deploy argument (`index-BHrjSLrE.js`).
+- The fixes below were local at acceptance time and were deployed at 11:40
+  UTC (see Patch deployment above).
+
+### What the refresh persisted (verified independently in PostgreSQL)
+
+| Stage | Fetched → persisted | Verified evidence |
+|---|---|---|
+| LEAGUE_SETTINGS | 13 → 14 | league, settings and 12 teams at 08:31:32.116 UTC |
+| PLAYER_POOL | 744 → 744 | pool and 12 roster snapshots at 08:31:50.093 UTC |
+| LEAGUE_ROSTERS / ROSTER_SLOTS | 173 → 173 | 12 of 12 teams; every row has a slot; Box Score Bully 15 |
+| YAHOO_AVAILABILITY_STATUS | 744 → 744 | 315 explicit statuses; Yahoo FA/W state not supplied |
+| NBA_TEAMS_PLAYERS | 559 → 559 | 30 teams + 529 players at 08:32:14.536 UTC |
+| NBA_SCHEDULE | 1,274 → 50,293 | 1,274 games + 49,019 player rows (to 2027-04-11) |
+| NBA_GAME_LOGS | 4,467 → 4,467 | 4,126 regular-season logs 2026-10-20..2026-11-13 |
+| NBA_SEASON_STATS | 1,626 → 1,626 | 2026-27: 467 regular season + 577 preseason; 2025-26: 582 |
+| POST_REFRESH_VERIFICATION | 11 of 11 | 46 Yahoo requests, 0 practice-league requests, 0 transactions |
+
+Mixed units are expected (league + settings + teams; games + player rows).
+All nine November 13 games are Final with logs. Practice leagues untouched.
+
+### Team and decision (persisted data, all three modes)
+
+- Roster (matches the user's Yahoo page): PG Kris Dunn, SG Keyonte George,
+  G Bones Hyland, SF Norman Powell, PF Cameron Johnson, F Zach LaVine, C
+  Pascal Siakam, C P.J. Washington, UTIL Jarrett Allen, UTIL Julius Randle,
+  BN Luka Dončić (P), BN Dillon Brooks, BN RJ Barrett, IL Stephen Curry (O),
+  IL Lauri Markkanen (O). **ROSTER FULL — AN ADD REQUIRES A DROP**: 13 of 13
+  regular spots, IL 2 of 3 (one open), no IL move available.
+- Weekly adds 2 of 4 used (2 left, Yahoo week 4); waiver priority 4th.
+- Availability: 302 `UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT` (eligible),
+  158 other teams, 15 manager, 269 `EXCLUDED_STATUS` (299 / 272 with the
+  local OFS fix). Invariant: 0 violations on the API (all modes, every
+  featured surface) and on the page. Jrue Holiday is `ROSTERED_BY_OTHER_TEAM`
+  (Pick And Roll) and appears nowhere.
+- Decision: **HOLD** in Rest of Week, Next 7 Days and Season Evidence (7,423
+  pairs each). Best measured: DeMar DeRozan (Rest of Week, Next 7 Days),
+  Santi Aldama (Season Evidence). Top WATCH pairs: DeRozan / Hyland (+0.85,
+  Rest of Week), DeRozan / Dunn (+1.13, Next 7 Days), Max Strus / Hyland
+  (+0.22, Season Evidence).
+- Main blocker: blank Yahoo status (UNKNOWN) fails every positive pair in
+  every mode and is the only blocker for 13 Next 7 Days and 36 Season
+  Evidence pairs; next is the sample gate (7 games this season and, in weekly
+  windows, 7 in the last 14 days; Hyland and Dunn have 6). This is Yahoo's
+  blank-for-no-designation convention meeting the deliberate fail-closed
+  rule, not a defect; changing it is a product decision.
+- Measured PPG is shrunk toward 2025-26 (n/(n+10)): DeRozan measures 26.5
+  but averaged 15.8 over his last 4 games; Nikola Vučević measures 22.7 on
+  8.6 actual. Labeled, by design.
+
+### Defects found and fixed (deployed 2026-11-14 11:40 UTC)
+
+1. **Yahoo status normalization:** `OFS` ("Out For Season" in persisted
+   `status_full`) was unrecognized, so 3 OFS players were eligible and
+   labeled "OFS · UNKNOWN", and an OFS roster player would count as
+   lineup-eligible. OFS is now a verified excluded status (O/OFS/NA).
+2. **Gate explanations:** WATCH pairs said "Below seven supported
+   current-season games" for 12-game adds when the failing count was the
+   drop's 6 games in the last 14 days, and never mentioned the status gate;
+   the WATCH list rebuilt "Why not add" in the browser. Notes now name the
+   player and window plus each unverified status; the UI shows them.
+3. **Refresh verification:** season-stats checks counted preseason rows the
+   model never reads (1,044 reported, 467 usable); a refresh without
+   regular-season stats would have passed. Checks now count Regular Season.
+4. **Mobile overflow:** opening "Why? Roster capacity details" widened a
+   390 px page to 589 px (flex item `min-width: auto` around the slot
+   table). Fixed with `min-width: 0`.
+
+Real-data recheck with the fixed source (read-only, 235 SELECTs): eligible
+299, `EXCLUDED_STATUS` 272, OFS players excluded in every mode, notes such as
+"Sample gate: Bones Hyland 6 games in the last 14 days", season stats "467
+regular-season rows (2026-27)", decisions unchanged.
+
+### Validation
+
+- Backend **404 passed** (6 new regression tests); frontend unit **55/55**,
+  `tsc -b` and build passed; fixture Playwright **42/42** (desktop + mobile).
+- Deployed page, GET-only (0 non-GET requests): desktop and mobile refresh
+  panel, TEAM SITUATION, BEST MOVES, OTHER GOOD OPTIONS, COMPARE A SPECIFIC
+  DROP (exact drop 10263), FULL WAIVER LIST (302 rows, no rostered player),
+  ADVANCED EVIDENCE counts, keyboard focus return and simulated 504 passed;
+  axe 0 violations. Mobile failed only the overflow check (defect 4) on the
+  pre-patch build; it passes after the patch.
+- Performance (deployed, normal load): board 2.6-3.6 s, transactions
+  2.6-3.6 s, replacements 2.6-4.0 s, impact 1.7-3.0 s; board 1.16 MB. Fixed
+  and deployed sources measure the same (2.3-2.5 s weekly board compute).
+
+### Host capacity (environment, not an application change)
+
+The 7.3 GB shared host repeatedly ran out of memory during acceptance (swap
+2.4-3.1 GB, I/O full pressure up to 78%). The single API worker sat in
+uninterruptible disk wait; reads took 13-48 s and at worst 218-340 s, so
+nginx returned real 504s at 60 s. The page showed WAIVER ANALYSIS TIMED OUT
+with the request ID and no HTML, as designed. Proxy timeouts were not changed.
+
+# One-Click Waiver Refresh & Authoritative Availability — 2026-11-14
+
+**STATUS AT THE TIME: IMPLEMENTED AND TESTED LOCALLY / NOT DEPLOYED / EVIDENCE
+NOT REFRESHED.** Superseded the same day: deployed 08:26 UTC and refreshed
+08:31-08:33 UTC (see CURRENT STATE above). Model `waiver-availability-phase5` adds one backend-owned
+**REFRESH WAIVER DATA** workflow, Yahoo availability classes with a hard
+recommended-subset-of-eligible invariant, weekly-adds and waiver-priority
+context, structured timeout handling and faster waiver reads. Production
+still runs `waiver-capacity-phase4` with 2026-10-25 rosters and NBA data.
+Every production check in this record was read-only; deployment and the first
+refresh wait for explicit authorization.
+
+### Root causes
+
+1. **No single refresh owner.** Making the Waiver Center current took three
+   manual POSTs plus a reload. On 2026-11-14 at 03:39 UTC only
+   `POST /api/v1/leagues/import` succeeded; the players import was never run
+   and `POST /api/v1/nba/import?recent_days=30` failed with HTTP 500, so
+   rosters, slots, statuses and NBA data stayed at 2026-10-25.
+2. **Import defects** (first found 2026-11-13): an unscoped players import
+   also sent 9 local Yahoo Mock Practice pseudo-leagues to Yahoo, and the
+   all-or-nothing import saved nothing; the NBA game-log upsert exceeded
+   PostgreSQL's 32,767 bind parameters and rolled back the whole NBA import.
+3. **Availability inferred from stale absence.** With stale rosters the
+   deployed model still featured players "not on any saved roster" as BEST
+   MEASURED OPTION and OTHER GOOD OPTIONS (Jrue Holiday first). Yahoo's
+   current available-player list does not include him.
+4. **504 page rendered raw.** Under the post-refresh workload the weekly board
+   and best-move reads each took about 7 seconds of single-worker analysis and
+   the board returned 6 MB; overlapping reads on the shared host passed
+   nginx's 60-second limit (proxy log: 499 and 504 at 60 s). The client used
+   any non-JSON error body as the message, so the full nginx HTML appeared in
+   TEAM SITUATION and BEST MOVES.
+5. **Acquisition context ignored.** The persisted, already-supported Yahoo
+   teams payload carries `waiver_priority` and `roster_adds`; they were never
+   normalized.
+
+### Implementation
+
+- `POST /api/v1/waivers/refresh` (202) and `GET /api/v1/waivers/refresh`
+  (database-only status): ten ordered stages, per-stage results and
+  verification, overall SUCCEEDED / PARTIAL_FAILURE / FAILED, retry of failed
+  boundaries only, one active job, and a PostgreSQL advisory lock shared with
+  the manual import routes (409 `PROVIDER_IMPORT_IN_PROGRESS`). No table or
+  migration was added.
+- Yahoo import split into fetch, validate (every team roster and every
+  `selected_position`) and one-transaction persist with stamped-count
+  verification; practice leagues excluded by three discriminators; naming one
+  returns 422. NBA import split into fetch and one-transaction persist, with
+  every multi-row upsert batched at 500 rows and in-transaction count
+  verification (502 on mismatch).
+- Availability classes, the recommendation invariant (backend 500
+  `RECOMMENDATION_CONTRACT_VIOLATION`; UI WAIVER MODEL CONTRACT ERROR),
+  actionable-only featuring, separate potential targets and the
+  `POTENTIAL_TARGETS` state (NO CONFIRMED AVAILABLE PLAYER).
+- Acquisition context in TEAM SITUATION; structured client errors, WAIVER
+  ANALYSIS TIMED OUT with RETRY ANALYSIS / REFRESH WAIVER DATA, `X-Request-ID`
+  through nginx and the API, `Server-Timing` and one `request_timing` log line.
+- Waiver read performance (same host and data, post-refresh workload):
+  weekly board 6.4-7.1 s / 6.1 MB → 1.8-2.1 s / 1.1 MB; best-move
+  transactions 6.9-7.1 s → 1.8-1.9 s; replacements 4.9-5.3 s → 1.5-2.0 s;
+  impact 3.4-3.7 s → 1.0-1.3 s; Season Evidence 4-10 s → about 2-6 s. Each
+  read issues 17 read-only statements, no writes and no provider calls.
+
+### Current real-data result (read-only, new code, all three modes)
+
+- Evidence: league/settings current (2026-11-14 03:39 UTC, Driveway Dudes, 12
+  teams); player pool (744), all 12 roster snapshots, slots (0 of 13 saved)
+  and NBA data (latest game 2026-10-24) stale since 2026-10-25.
+- Saved Box Score Bully roster (2026-10-25): 13 players, no slot saved: DeMar
+  DeRozan, Dillon Brooks, Jarrett Allen, Julius Randle, Keyonte George, Lauri
+  Markkanen, Luka Dončić, Norman Powell, P.J. Washington, Pascal Siakam, RJ
+  Barrett, Stephen Curry (P) and Zach LaVine. The user's current Yahoo roster
+  has 15 (13 regular + Curry and Markkanen in IL): DeRozan is gone and Kris
+  Dunn, Bones Hyland and Cameron Johnson are new. Persisted data cannot show
+  this until a refresh.
+- Capacity: ROSTER CAPACITY NEEDS A YAHOO REFRESH (stale snapshot; 0 of 13
+  slots), INSUFFICIENT EVIDENCE, no drop assumed.
+- Availability: 0 of 12 snapshots current; 309 `SOURCE_STALE`, 152
+  `ROSTERED_BY_OTHER_TEAM`, 13 `ROSTERED_BY_MANAGER`, 270 `EXCLUDED_STATUS`;
+  0 eligible candidates.
+- Decision support: state POTENTIAL_TARGETS ("No player is confirmed available
+  yet."); no supported move, best measured option, group pick or watch
+  player. Potential targets (top 10 of 192, SAVED ROSTERS STALE — CHECK IN
+  YAHOO): Jrue Holiday, Nikola Vučević, Keegan Murray, Jerami Grant, Isaiah
+  Collier, Bilal Coulibaly, Bennedict Mathurin, Scotty Pippen Jr., Kelly Oubre
+  Jr. and Deandre Ayton. The deployed build features eight of them as
+  BEST MEASURED OPTION or group picks.
+- Acquisition context: waiver priority 4th; 2 of 4 weekly adds used in Yahoo
+  week 4 (2 left), from the 03:39 UTC league import. Matches the user's Yahoo
+  page.
+- Read-only harness: 109 read statements, 0 writes, 0 provider attempts.
+
+### Validation
+
+- Backend full suite **398 passed** (disposable PostgreSQL 16, internal
+  network), including 8 refresh-orchestration tests, availability-class,
+  invariant, 13 + 2 IL, acquisition and request-timing tests and a >4,095-log
+  NBA import.
+- Frontend: TypeScript and Vite build passed; unit **54/54**; waiver
+  Playwright **40/40** (desktop 1440 and mobile 390, axe, keyboard focus
+  return, GET-only except the refresh POST).
+- `nginx -t` passed; a throwaway nginx + stub upstream confirmed one
+  `X-Request-ID` per proxied response, the same ID upstream and the header on
+  nginx's own error page.
+- No deployment, rebuild, provider request, OAuth action, migration, database
+  write, Yahoo transaction, commit or push occurred.
+
+### Deployment and refresh acceptance (completed 2026-11-14; see CURRENT STATE)
+
+Plan: take a private `pg_dump` archive backup; rebuild and recreate only `api`
+and `frontend` (no migration); confirm `waiver-availability-phase5` and the
+refresh status; click **REFRESH WAIVER DATA** once; then verify persisted
+timestamps and counts, the 13 regular + 2 IL roster against Yahoo (Curry and
+Markkanen in IL, one open IL slot), candidate availability against Yahoo's
+available-player list (Jrue Holiday not recommended unless current Yahoo
+evidence confirms him), current NBA logs/schedule/stats, all three modes, no
+raw 504 HTML and zero Yahoo transactions. Exact commands are in
+[next actions](next-actions.md).
+
+## Post-Deployment Waiver Acceptance — 2026-11-13 (Pacific; 2026-11-14 UTC)
+
+**STATUS: DEPLOYED / EVIDENCE NOT REFRESHED.** Phase 4 and the decision-support
+redesign (`waiver-capacity-phase4`) are deployed and verified. The Yahoo
+player/roster refresh and the NBA refresh that followed **failed and
+persisted nothing**, so the page still reflects 2026-10-25 rosters, Yahoo
+statuses and NBA data. Two import defects and one display defect were fixed
+locally (**validated locally / not deployed**). All checks were read-only.
+Superseded on 2026-11-14: these fixes shipped with Phase 5 (deployed 08:26
+UTC) and the refresh then succeeded; see CURRENT STATE.
+
+### Deployment verification
+
+- API image built 2026-11-13 23:57:15 UTC and frontend image 23:59:21 UTC;
+  containers recreated 23:59:33 / 23:59:54 UTC.
+- The running API's waiver, players-import and Yahoo-roster sources are
+  byte-identical to the worktree (SHA-256); the served bundle contains the
+  final page text and none of the removed Phase-4 headings.
+- `GET /api/v1/waivers` reports `waiver-capacity-phase4` in all three modes.
+
+### What the refreshes persisted
+
+| Request (UTC, proxy log) | Result | Persisted |
+|---|---|---|
+| `POST /api/v1/leagues/import` 00:00:22 | 502 (API still starting) | nothing |
+| `POST /api/v1/leagues/import` 00:00:43 | 200 | league, settings and 12 teams at 00:00:42 |
+| `POST /api/v1/players/import` (no `league_key`) 00:02:41 | 502 "Yahoo Fantasy API rejected the league request" | **nothing** |
+| `POST /api/v1/nba/import?recent_days=30` 00:06:01 | 500 (bind-parameter limit) | **nothing** |
+
+- Settings (current): `PG SG G SF PF F C×2 Util×2 BN×3 IL×3` — 13 regular
+  spots plus 3 IL.
+- Still 2026-10-25 18:20 UTC: all 165 league roster rows (**0 with a saved
+  slot**), every `fantasy_teams` snapshot and the 744-row player pool.
+- Still 2026-10-25 19:04 UTC: NBA game logs (latest game 2026-10-24; 812
+  regular-season logs), season stats (388 rows for 2026-27, 1–3 games),
+  schedule and games.
+
+### Root causes
+
+1. **Unscoped players import includes local practice leagues.** Without
+   `league_key` the import selects every persisted league, including 9 local
+   Yahoo Mock Practice pseudo-leagues (`yahoo-mock-practice.*`). Those keys
+   cannot exist in Yahoo; the API log records "Yahoo Fantasy API rejected
+   request" at 00:02:41.597 (a non-401 4xx). All fetching precedes the single
+   write transaction, so the already-fetched `478.l.50505` rosters were
+   discarded too. The **Refresh Yahoo baseline** button passes the league key
+   and is unaffected.
+2. **Oversized NBA upsert.** `import_game_logs` sent every log in one
+   8-column multi-row INSERT; a 30-day window holds more than 4,095 logs, so
+   asyncpg rejected it at 32,767 parameters. The NBA import is one
+   transaction, so teams, players, schedule and stats rolled back as well.
+3. **Display:** FULL WAIVER LIST counted only O/NA players with confirmed
+   availability, so it read "0 Yahoo O/NA players excluded" while 270 were
+   excluded.
+
+None of these is a capacity, decision-support or evidence-gate defect: with
+stale rosters the capacity engine correctly fails closed.
+
+### Fixes (validated locally / not deployed)
+
+- `features/players/service.py`: the import never selects
+  `yahoo-mock-practice.*` leagues; naming one returns 404.
+- `services/nba/game_logs.py`: game logs upsert in batches of 500 rows (the
+  schedule importer's existing batch size).
+- `WaiverCenter.tsx`: the O/NA count adds decision support's unverified O/NA
+  count to `excluded_count`.
+- Regression tests: both new backend tests fail on the pre-fix code with the
+  exact production errors (502 rejection; 32,767-parameter `InterfaceError`)
+  and pass after the fix; the unit test asserts the summed O/NA count.
+
+### Current real-data result (all three modes)
+
+- Capacity **ROSTER CAPACITY NEEDS A YAHOO REFRESH**: the roster snapshot
+  predates the 00:00:42 settings import, and `selected_position` is missing
+  for 13 of 13 players. Open spots, IL state, adds without a drop and
+  `requires_drop` are unknown; no drop is assumed.
+- Needs (stale basis): Guard, Wing/Forward and Center COVERED; no schedule
+  gaps can be computed (stale schedule).
+- Supported moves: none (INSUFFICIENT EVIDENCE).
+- BEST MEASURED OPTION: Jrue Holiday (PG/SG), 30.5 measured PPG, AVAILABILITY
+  UNVERIFIED, status UNKNOWN; groups Isaiah Collier, Keegan Murray (Q), Nikola
+  Vučević, Jerami Grant, Bennedict Mathurin / Scotty Pippen Jr. (short-term),
+  Bilal Coulibaly (longer-term); WATCHLIST empty; 10 of 192 potential targets.
+- Availability: 0 confirmed, 192 comparable availability-unverified, 579
+  pool players unknown, 152 on other saved rosters, 270 O/NA excluded; among
+  comparable options 183 blank (UNKNOWN), 7 Q, 2 P; 0 unresolved among the 17
+  featured players.
+- Injury case: the persisted roster shows no injured player — only Stephen
+  Curry has an explicit status (P) and no player lists IL eligibility. The two
+  injuries reported by the user are not in persisted evidence yet.
+
+### Validation
+
+- Deployed API (GET only): every invariant passed in all three modes;
+  per-table insert/update/delete counters for all 29 tables were unchanged
+  across the API suite and both browser runs; the API container opened no
+  new outbound :443 connection (one pre-existing CLOSE_WAIT socket from an
+  earlier import).
+- Deployed page: **6/6** (desktop 1440 / mobile 390 × three modes): section
+  order, first recommendation above the fold, collapsed sections, muted
+  compare tool with no drop preselected, keyboard focus return, no overflow,
+  zero axe violations, GET-only, same-origin only. Two desktop cases first
+  hit nginx 504s (60-second proxy timeout) while the shared host was under
+  swap/IO pressure from the browser tooling and passed on rerun.
+- Instrumented read-only replica of the same source: decision support,
+  capacity, needs and transactions identical to the deployed API; 510
+  SELECT, 0 commits, 0 blocked statements, 0 provider attempts. Local
+  real-data UI with the fixes: 2/2 (Rest of Week, "270 Yahoo O/NA players
+  excluded").
+- Backend full suite **380 passed**; frontend unit **47/47**, waiver
+  Playwright **28/28**, TypeScript and build passed.
+- No deployment, rebuild, Yahoo/NBA refresh, OAuth action, migration,
+  database write, Yahoo transaction, commit or push occurred during
+  acceptance.
+
+### PASS/FAIL (real data)
+
+| | Check | Result |
+|---|---|---|
+| A | Current `selected_position` persisted | FAIL — players import failed; 0/165 slots |
+| B | Capacity not UNDETERMINED solely for missing slots | FAIL — still undetermined (stale snapshot + missing slots) |
+| C | Injured/IL players recognized | FAIL — not evaluable on 2026-10-25 data |
+| D | Open capacity → ADD ONLY | PASS in tests; not exercised by real data |
+| E | IL move → MOVE TO IL THEN ADD | PASS in tests; not exercised by real data |
+| F | Full roster → ADD + DROP | PASS in tests; not exercised by real data |
+| G | No drop preselected | PASS |
+| H | Practical targets in BEST MOVES | PASS (best measured option, groups, targets) |
+| I | Availability reflects refreshed rosters | FAIL — rosters not refreshed |
+| J | Current NBA evidence used | FAIL — NBA import rolled back |
+| K | Analysis read-only | PASS |
+| L | No provider calls during waiver GETs | PASS |
+| M | No Yahoo transaction | PASS |
+
+## Decision Support & Decision-First Redesign — 2026-11-13
+
+**STATUS AT THE TIME: VALIDATED LOCALLY / NOT DEPLOYED** (model version
+unchanged: `waiver-capacity-phase4`). Deployed 2026-11-13 23:59 UTC; see the
+post-deployment acceptance above. Its deploy step is complete; its refresh
+steps are not.
+
+When strict evidence gates fail, the Waiver Center now still names the best
+measurable target to check in Yahoo instead of showing nothing useful. A
+separate non-actionable layer classifies players as SUPPORTED ACTION, BEST
+MEASURED OPTION, WATCH, MEASURED or UNAVAILABLE with a backend
+`decision_rank`; the strict Phase-4 actions, evidence gates, exact ADD + DROP
+and no-drop comparison equalities, database-only reads and structured 409
+errors are unchanged. The page follows the six-section hierarchy TEAM
+SITUATION → BEST MOVES RIGHT NOW → OTHER GOOD OPTIONS → COMPARE A SPECIFIC
+DROP → FULL WAIVER LIST → ADVANCED EVIDENCE. Rules are in
+[project memory](../project-memory.md) and the
+[README](../../README.md#decision-support-when-strict-gates-fail); the dated
+record is the [2026-11-13 session](../sessions/2026-11-13.md).
+
+### Root causes found by the audit
+
+- Strict actions were the only output channel. With no supported add, BEST
+  MOVE showed only HOLD or INSUFFICIENT EVIDENCE, and nothing ranked
+  measurable players that failed a gate.
+- Unknown-availability players were never listed: with stale league rosters
+  the board had 0 candidates while 579 pool players were unknown and 192
+  of them were measurable.
+- Stale league settings emptied the scoring fields, so no production could be
+  measured even though the persisted formula had passed the contract check;
+  team needs also lost all slot counts.
+- Weekly modes had no recent production (no persisted games in the last 14
+  days; the latest game is 2026-10-24) and 2026-27 rows have only 1–3 games,
+  with no blended comparison to fall back on.
+- Diagnostics led the page: capacity blockers, raw need scores including
+  UTIL/bench, coverage tables and an expanded full list came before any
+  decision.
+
+### Implementation
+
+- New `backend/app/features/waivers/decision_support.py`: measured
+  production (14-day or current-season sample shrunk toward prior season
+  with n/(n+10); at least 4 games without prior history), comparability
+  reasons, sequential best-measured picks by capacity shape, distinct group
+  picks, WATCHLIST, potential targets, ranks, why/blocker/confirm text.
+- `capacity.py`: plain-language capacity headline and short reason;
+  HIGH/MEDIUM/COVERED needs by Guard, Wing/Forward and Center with depth and
+  basis notes. `service.py`: persisted-formula measurement and persisted slot
+  needs when settings are stale, an evidence-freshness summary (one extra
+  aggregate SELECT) and decision support on every board without an explicit
+  drop. Contracts and frontend types add the new fields.
+- `WaiverCenter.tsx`/`styles.css`: the six-section page; supported move
+  cards first, BEST MEASURED OPTION cards with NOT YET A SUPPORTED ADD and
+  CHECK IN YAHOO, grouped options, potential targets, muted/promoted compare
+  tool, collapsed full list with eight filters, collapsed advanced evidence.
+
+### Real-data result (read-only, all three modes)
+
+Persisted evidence on 2026-11-13: league, settings and team rows were
+refreshed at 21:05 UTC by a leagues-only import on the deployed (old) app;
+rosters and the player pool are still from 2026-10-25 18:20 UTC and NBA
+logs, stats and schedules from 19:04 UTC.
+
+- Capacity: **ROSTER CAPACITY NEEDS A YAHOO REFRESH** — "Your saved roster
+  is from 2026-10-25; Yahoo roster slots are not saved for 13 of 13
+  players." Blockers: stale roster snapshot; `selected_position` missing for
+  13/13. Needs (stale basis): Guard, Wing/Forward and Center all COVERED.
+- Supported moves: none (INSUFFICIENT EVIDENCE; 0 pairs, 0 additions).
+- BEST MEASURED OPTION: **Jrue Holiday** (PG/SG), 30.5 measured Yahoo
+  fantasy PPG from 2 current-season games blended with 2025-26 (31.5),
+  1/4/69 scheduled games (Rest of Week/Next 7 Days/Season, stale schedule),
+  status UNKNOWN, AVAILABILITY UNVERIFIED, would rank 10 of 14 on the roster.
+  Blockers: undetermined capacity, unverified availability, blank status
+  from a stale import, 2-game sample (7 needed), stale production, no games
+  in the last 14 days (weekly modes), stale roster.
+- Groups: Isaiah Collier (guard), Keegan Murray (wing/forward), Nikola
+  Vučević (center), Jerami Grant (multi-position), Bennedict Mathurin (Rest of
+  Week) / Scotty Pippen Jr. (Next 7 Days) short-term, none in Season
+  Evidence, Bilal Coulibaly (longer-term). WATCHLIST empty: nobody else
+  out-produces the lowest roster player (27.2 PPG).
+- POTENTIAL TARGETS: 192 comparable unverified players; the top 10 are led
+  by Scotty Pippen Jr., Kelly Oubre Jr. and Deandre Ayton (Mathurin leads in
+  Next 7 Days and Season Evidence). Not comparable: 270 O/NA, 82 without
+  current-season games, 35 under 4 games without prior history, 152 on
+  another team's saved roster.
+
+### Validation
+
+- Backend full suite **378 passed** (14 new decision-support tests; one
+  existing assertion updated for stale-settings needs).
+- Frontend: TypeScript and Vite build passed; unit tests **47/47**; waiver
+  Playwright **28/28** (14 scenarios × desktop 1440/mobile 390), including
+  the six-section order, collapsed sections, no preselected drop,
+  recommendations above the fold at 1440px, keyboard focus return, 409
+  errors, zero writes and axe.
+- Real-data acceptance used the read-only local-source server (read-only
+  sessions, read-only statement guard, provider entry points patched to
+  fail). API check: all invariants passed in all three modes; 17 featured
+  identities verified resolved and not O/NA; 510 SELECT, 0 commits,
+  0 blocked statements, 0 provider attempts. Browser: **6/6** (desktop and
+  mobile × three modes) with zero non-GET requests, zero foreign hosts, no
+  overflow and zero axe violations. Desktop Rest of Week passed on a
+  targeted rerun after its first attempt timed out in the final axe scan
+  while the shared host was under heavy swap/IO pressure.
+- No deployment, rebuild, provider refresh, OAuth action, migration,
+  database write, Yahoo transaction, commit or push occurred.
+
+### Remaining blockers
+
+- Deploy, then run the **full** Refresh Yahoo baseline (the 21:05 UTC
+  leagues-only import did not refresh rosters or the player pool, and the old
+  app cannot persist `selected_position`), then the NBA import. Until then
+  capacity stays undetermined, availability unverified and production stale.
+- Blank Yahoo status (12 of 13 roster players) keeps blocking supported
+  actions by design; transaction legality, game-level usage/starts, schedule
+  completeness and acquisition context remain open evidence gaps.
+
+## Phase 4: Waiver Roster Capacity & Team Needs — 2026-11-13 (earlier)
+
+**STATUS AT THE TIME: VALIDATED LOCALLY / NOT DEPLOYED** (model
+`waiver-capacity-phase4`); deployed 2026-11-13 23:59 UTC with the redesign.
+Its page order below was superseded the same day by the decision-first
+redesign above; the capacity and action behavior is unchanged.
+
+The Waiver Center now decides whether an add needs a drop before ranking
+players. Capacity comes only from persisted Yahoo roster positions and
+persisted Yahoo slot assignments. Actions are **ADD ONLY**, **MOVE [player]
+TO IL THEN ADD**, **ADD + DROP**, **WATCH**, **HOLD** and **INSUFFICIENT
+EVIDENCE**; stale, missing or conflicting capacity evidence fails closed to
+INSUFFICIENT EVIDENCE with exact blockers and no assumed drop. The Yahoo
+points formula, sample/status/freshness gates, manager-team protection,
+ADD + DROP exact-pair equality and the database-only read boundary are
+unchanged. Durable rules are in [project memory](../project-memory.md); the
+operator description is in the [README](../../README.md); the dated record is
+the [2026-11-13 session](../sessions/2026-11-13.md).
+
+### Root causes found by the audit
+
+- **Slot assignments were never persisted.** Yahoo returns each roster player
+  as `[[metadata fragments], {"selected_position": [...]}]`. The generic record
+  extractor kept only the metadata, and `_roster_position` could not parse
+  the fragment-list form, so `rosters.roster_position` was NULL for all 165
+  persisted roster rows (13/13 for Box Score Bully). The previous test used a
+  synthetic flat shape.
+- **Capacity was assumed, not measured.** NULL slots were treated as
+  non-injury spots, so the roster always looked full; the optimizer always
+  evaluated ADD × DROP pairs (7,527 per mode); the UI preselected the first
+  roster player as the drop; the direct injury-slot rule was display-only.
+- Stale capacity evidence produced success-shaped HOLD instead of
+  INSUFFICIENT EVIDENCE; lineup coverage counted O/NA players; impact without
+  a drop silently used the best measured drop; team needs were one sentence.
+- Documentation said Source Integrity was not deployed, but the running API
+  and frontend images (built 2026-11-13 16:54Z/16:57Z) match commit `93fd50f`
+  by source hashes and bundle content. Source Integrity is deployed; Phase 4
+  is not.
+
+### Implementation
+
+- Yahoo roster import keeps the `selected_position`/`starting_status` sibling
+  blocks (`extract_roster_player_records`); `_roster_position` parses the
+  fragment-list form. Existing rows are corrected only by Refresh Yahoo
+  baseline.
+- New `backend/app/features/waivers/capacity.py` owns roster capacity
+  (occupancy, open spots, IL moves and blockers, fail-closed blockers) and
+  team needs (open/injury-weakened starting slots, per-date gaps, coverage,
+  production context, hold guidance).
+- `service.py` evaluates pairs only for ADD + DROP, builds a sequential
+  no-drop fill plan for open capacity, adds the no-drop comparison, action
+  types/labels, decision priority, option groups and lineup slot-days gained,
+  and returns INSUFFICIENT EVIDENCE when capacity is UNDETERMINED.
+- Contracts and frontend types add `roster_capacity`, `team_needs_analysis`,
+  `option_groups`, action fields and addition counts. The UI is reordered to
+  TEAM SITUATION → WHAT YOUR TEAM NEEDS → BEST MOVE RIGHT NOW → OTHER OPTIONS
+  (optional Compare a specific drop, never preselected) → FULL WAIVER LIST →
+  ADVANCED EVIDENCE.
+
+### Current persisted evidence (read-only, 2026-11-13)
+
+- Every Yahoo import (league, settings, teams, rosters, player pool) is from
+  2026-10-25 18:20 UTC and NBA logs/schedules/stats from 19:04 UTC, so all are
+  stale for waiver decisions.
+- Driveway Dudes roster positions: `PG SG G SF PF F C C UTIL UTIL BN BN BN IL
+  IL IL` (13 non-injury + 3 IL). Box Score Bully has 13 players, one explicit
+  Yahoo status (P) and **no persisted slot assignments**.
+- Result in all three modes: capacity **UNDETERMINED** (state stale),
+  `requires_drop=null`, occupancy unknown, 13 unassigned players, three
+  blockers (stale settings, stale roster snapshot, `selected_position` missing
+  for 13/13), legality unavailable, team needs stale with null starting-slot
+  counts. The board returns **INSUFFICIENT EVIDENCE** with 0 candidates
+  (579 pool players have unknown availability because the league rosters are
+  stale). Transactions: INSUFFICIENT EVIDENCE, 0 pairs, 0 additions. Impact
+  without a drop returns no comparison; an explicit drop returns an ADD + DROP
+  comparison with null net improvement. Other-team requests return 422 on all
+  four endpoints.
+
+### Validation
+
+- Backend: focused waiver/Yahoo tests **200 passed**; full suite
+  **364 passed**. Both report the one existing Starlette/httpx deprecation warning.
+- Frontend: strict TypeScript and Vite build passed; unit tests **45/45**;
+  waiver Playwright **26/26** (13 scenarios × desktop/mobile, including axe,
+  zero writes, ADD ONLY, IL move, multiple open spots, full roster,
+  HOLD/WATCH and undetermined capacity).
+- Real-data acceptance ran the local source in a temporary server that loads
+  only the waiver router. The database session defaulted to read-only, a
+  statement guard allowed reads only, and Yahoo/NBA/HTTP entry points were
+  patched to fail. A GET-only API check covered all modes and endpoints.
+  Browser acceptance passed **6/6** (desktop/mobile × three modes) with zero
+  non-GET API requests, zero foreign hosts, no horizontal overflow and zero
+  axe violations; the compare tool stayed collapsed with no drop preselected.
+  Server counters: 736 SELECT, 4 SHOW, 0 blocked statements, 0 commits,
+  0 provider attempts.
+- No deployment, image rebuild, service restart, migration, provider request,
+  OAuth action, database write, Yahoo transaction, commit or push occurred.
+
+### Remaining gaps
+
+- Real roster capacity for Box Score Bully cannot be established until
+  Refresh Yahoo baseline persists current slot assignments, which requires the
+  new import code to be deployed first.
+- Blank Yahoo status (439 pool observations; 12 of 13 roster players) remains
+  UNKNOWN and blocks strong actions, so fresh data may still yield WATCH or
+  INSUFFICIENT EVIDENCE for many candidates. This gate is intentionally
+  unchanged.
+- Transaction legality (roster/game-time locks, claim timing, weekly adds,
+  live IL eligibility) is unverified; every action requires Yahoo
+  confirmation.
+- Game-level usage/starts, schedule completeness and acquisition context
+  remain the open evidence gaps listed in [next actions](next-actions.md).
+
+## Historical: Waiver Source Integrity & Coverage — 2026-10-26
+
+**STATUS AT THE TIME: VALIDATED LOCALLY / NOT DEPLOYED.** Superseded on
+2026-11-13: the running images match commit `93fd50f`, so Source Integrity is
+deployed. The "NOT DEPLOYED" statements below are historical.
 
 The local changes add backend-owned coverage, grouped DATA GAPS, root-cause
 diagnostics, a non-mutating identity worklist, schedule/status source
