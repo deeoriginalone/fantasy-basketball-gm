@@ -45,6 +45,7 @@ from app.features.waivers.contracts import (
     ACTIONABLE_AVAILABILITY,
     AVAILABILITY_CLASS_LABELS,
     CHECKABLE_AVAILABILITY,
+    FORM_REASON_LABELS,
     MODEL_VERSION,
     RESOLVED_IDENTITY_STATES,
     AcquisitionContext,
@@ -64,6 +65,7 @@ from app.features.waivers.contracts import (
     DecisionSupport,
     DropOption,
     Evidence,
+    EvidenceDimension,
     FillRecommendation,
     FormTrend,
     FormWindow,
@@ -93,6 +95,7 @@ from app.features.waivers.contracts import (
     TeamNeeds,
     TransactionAnalysis,
     TransactionShape,
+    TransactionVerdict,
     ValueEvidence,
     WaiverBoard,
     WaiverCoverage,
@@ -101,6 +104,16 @@ from app.features.waivers.contracts import (
     availability_class,
 )
 from app.features.waivers.decision_support import build_decision_support, measured_production, sample_label
+from app.features.waivers.explanation import (
+    COMPONENT_NAMES,
+    EXPLANATION_GATE,
+    NEAR_TIE_GATE,
+    NEAR_TIE_NET,
+    alternatives,
+    drop_choice_text,
+    explain_comparison,
+    signed,
+)
 from app.features.waivers.sample import (
     SAMPLE_POLICY,
     SAMPLE_TIER_LABELS,
@@ -681,7 +694,8 @@ def explicit_season_starts(row: NbaPlayerSeasonStats | None) -> int | None:
 
 
 def _log_window(key: str, label: str, logs: list[PlayerGameLog], fields: dict[str, float] | None, now: datetime,
-        today: date, days: int, quality: Evidence | None) -> FormWindow:
+        today: date, days: int, quality: Evidence | None, *, mapped: bool = True, logs_current: bool = True,
+        logs_complete: bool = True) -> FormWindow:
     start = today - timedelta(days=days)
     rows = [row for row in logs if row.game_date >= start]
     stats = log_average(rows)
@@ -704,6 +718,8 @@ def _log_window(key: str, label: str, logs: list[PlayerGameLog], fields: dict[st
     else:
         detail = (f"{label}: {value:.1f} Yahoo fantasy PPG in {len(rows)} persisted regular-season "
             f"game{'s' if len(rows) != 1 else ''}" + (" (stale import)." if state == "stale" else "."))
+    reason = form_reason(value=value, rows=len(rows), fields=fields, stale=state == "stale", mapped=mapped,
+        logs_current=logs_current, logs_complete=logs_complete)
     tier = sample_tier(len(rows))
     return FormWindow(key=key, label=label, games=len(rows),
         fantasy_ppg=round(value, 2) if value is not None else None,
@@ -711,16 +727,43 @@ def _log_window(key: str, label: str, logs: list[PlayerGameLog], fields: dict[st
         minutes_median=round(median(minutes), 2) if minutes else None,
         starts_detail=LOG_STARTS_DETAIL, usage_detail=LOG_USAGE_DETAIL,
         sample_tier=tier, sample_label=SAMPLE_TIER_LABELS[tier], window_start=start, window_end=today,
-        latest_game=latest, as_of=as_of, state=state, detail=detail)
+        latest_game=latest, as_of=as_of, state=state, detail=detail,
+        reason=reason, reason_label=FORM_REASON_LABELS[reason] if reason else "")
+
+
+def form_reason(*, value: float | None, rows: int, fields: dict[str, float] | None, stale: bool, mapped: bool,
+        logs_current: bool, previous: bool = False, logs_complete: bool = True) -> str | None:
+    """Why a form window has no current value: never a bare "n/a" that hides the cause."""
+    if value is not None:
+        return "DATA_STALE" if stale else None
+    if not mapped:
+        return "MAPPING_UNRESOLVED"
+    if fields is None:
+        return "SCORING_UNSUPPORTED"
+    if rows:
+        return "DATA_STALE" if stale else "SCORING_FIELD_MISSING"
+    if previous:
+        return "NO_PREVIOUS_SEASON"
+    if not logs_current:
+        return "DATA_STALE"
+    # Season stats count more current-season games than persisted logs: the empty window may be an import gap.
+    if not logs_complete:
+        return "GAME_LOGS_MISSING"
+    return "NO_GAMES_IN_WINDOW"
 
 
 def _season_window(key: str, label: str, row: NbaPlayerSeasonStats | None, fields: dict[str, float] | None,
-        now: datetime, quality: Evidence | None, starts: int | None, usage: float | None) -> FormWindow:
+        now: datetime, quality: Evidence | None, starts: int | None, usage: float | None, *, mapped: bool = True,
+        logs_current: bool = True, logs_complete: bool = True) -> FormWindow:
+    previous = key == "PREVIOUS_SEASON"
     if row is None:
+        reason = form_reason(value=None, rows=0, fields=fields, stale=False, mapped=mapped, logs_current=logs_current,
+            previous=previous, logs_complete=logs_complete)
         return FormWindow(key=key, label=label, state="missing", sample_tier="INSUFFICIENT",
             sample_label=SAMPLE_TIER_LABELS["INSUFFICIENT"],
             starts_detail="No persisted season statistics.", usage_detail="No persisted season statistics.",
-            detail=f"No persisted {label.lower()} regular-season statistics.")
+            detail=f"No persisted {label.lower()} regular-season statistics.",
+            reason=reason, reason_label=FORM_REASON_LABELS[reason] if reason else "")
     stats = numeric_stats(row.base_stats)
     value = production(stats, fields)
     if quality is not None:
@@ -733,6 +776,8 @@ def _season_window(key: str, label: str, row: NbaPlayerSeasonStats | None, field
         state = freshness(row.imported_at, now, 7)
     minutes = row.minutes_per_game if row.minutes_per_game is not None and row.minutes_per_game >= 0 else None
     tier = sample_tier(row.games_played)
+    reason = form_reason(value=value, rows=row.games_played, fields=fields, stale=state == "stale", mapped=mapped,
+        logs_current=logs_current, previous=previous, logs_complete=logs_complete)
     return FormWindow(key=key, label=label, games=row.games_played,
         fantasy_ppg=round(value, 2) if value is not None else None,
         minutes_average=round(minutes, 2) if minutes is not None else None,
@@ -745,7 +790,8 @@ def _season_window(key: str, label: str, row: NbaPlayerSeasonStats | None, field
         sample_tier=tier, sample_label=SAMPLE_TIER_LABELS[tier], season=row.season, as_of=row.imported_at,
         state=state,
         detail=(f"{label} {row.season}: {value:.1f} Yahoo fantasy PPG in {row.games_played} games." if value is not None
-            else production_detail(stats, fields, label, row.games_played)))
+            else production_detail(stats, fields, label, row.games_played)),
+        reason=reason, reason_label=FORM_REASON_LABELS[reason] if reason else "")
 
 
 def form_trend(logs: list[PlayerGameLog], fields: dict[str, float] | None, now: datetime, today: date) -> FormTrend:
@@ -781,16 +827,19 @@ def form_trend(logs: list[PlayerGameLog], fields: dict[str, float] | None, now: 
 def recent_form(logs: list[PlayerGameLog], current_row: NbaPlayerSeasonStats | None,
         prior_row: NbaPlayerSeasonStats | None, fields: dict[str, float] | None, now: datetime, today: date, *,
         recent_quality: Evidence | None, season_quality: Evidence | None, starts: StartsEvidence | None,
-        season_usage: float | None) -> RecentForm:
+        season_usage: float | None, mapped: bool = True, logs_current: bool = True,
+        logs_complete: bool = True) -> RecentForm:
     """Last 7 / 14 / 30 Days from the one loaded 30-day log set, plus the current and previous season."""
+    context = dict(mapped=mapped, logs_current=logs_current, logs_complete=logs_complete)
     windows = [_log_window(key, label, logs, fields, now, today, days,
-        recent_quality if key == "LAST_14_DAYS" else None) for key, label, days in FORM_LOG_WINDOWS]
+        recent_quality if key == "LAST_14_DAYS" else None, **context) for key, label, days in FORM_LOG_WINDOWS]
     current_starts = starts.season_starts if starts is not None else None
     windows.append(_season_window("CURRENT_SEASON", "Current Season", current_row, fields, now,
-        season_quality if current_row is not None else None, current_starts, season_usage))
+        season_quality if current_row is not None else None, current_starts, season_usage, **context))
     prior_usage = _numeric(prior_row.advanced_stats.get("USG_PCT")) if prior_row is not None else None
     windows.append(_season_window("PREVIOUS_SEASON", "Previous Season", prior_row, fields, now, None,
-        explicit_season_starts(prior_row), prior_usage if prior_usage is not None and 0 <= prior_usage <= 1 else None))
+        explicit_season_starts(prior_row), prior_usage if prior_usage is not None and 0 <= prior_usage <= 1 else None,
+        **context))
     return RecentForm(windows=windows, trend=form_trend(logs, fields, now, today), limitations=list(FORM_LIMITATIONS))
 
 
@@ -877,6 +926,11 @@ def gate_category(note: str, mode: Mode) -> str:
             else "Sample gate: recent sample below the supported tier (under 7 games in the last 14 days or this season, and not corroborated)")
     if note.startswith("Yahoo status gate: "):
         return "Yahoo status gate: blank, unrecognized or stale Yahoo status (UNKNOWN)"
+    if note.startswith(f"{EXPLANATION_GATE}:") or note == EXPLANATION_GATE:
+        return (f"{EXPLANATION_GATE}: the positive index depends on a claim that does not hold in Yahoo fantasy points "
+            "(for example a schedule edge smaller than the production loss)")
+    if note.startswith(f"{NEAR_TIE_GATE}:"):
+        return f"{NEAR_TIE_GATE}: net below the {NEAR_TIE_NET:.3f} display-stability threshold (no strong preference)"
     return note
 
 
@@ -1291,7 +1345,7 @@ def _compare_pair(ctx: Context, player: Candidate, drop_id: int) -> DropOption:
             released = next((row.roster_slot for row in ctx.roster_capacity.assignments if row.player_id == drop_id), None)
             # The add inherits the released slot only when Yahoo eligibility allows it there.
             target = released if released and slot_accepts(released, player) else None
-    return DropOption(
+    option = DropOption(
         player_id=drop_id, player_name=dropped.player_name,
         before_score=before_score, after_score=after_score, net_improvement=net,
         component_deltas=deltas,
@@ -1307,6 +1361,40 @@ def _compare_pair(ctx: Context, player: Candidate, drop_id: int) -> DropOption:
             "Net improvement is a model-index difference, not a forecast of fantasy points.",
         ] if net is not None else ["Swap impact unavailable: fresh manager roster, positional eligibility and supported player values for every roster member are required."],
     )
+    if net is not None:
+        option.explanation = explain_comparison(
+            mode=ctx.mode, add=player, drop=dropped, comparison=option,
+            window=(player.schedule.window_start, player.schedule.window_end),
+            omitted=omitted_components(ctx, list(effective)),
+            recompute=lambda subset: _scores(ctx, before_total, after_total, subset)[2])
+    return option
+
+
+def omitted_components(ctx: Context, keys: list[str]) -> dict[str, str]:
+    """Why each component outside the common mask is not part of a comparison (never filled with a value)."""
+    reasons = {}
+    for key in COMPONENTS:
+        if key in keys:
+            continue
+        if ctx.weights.get(key, 0) <= 0:
+            reasons[key] = "its configured weight is 0."
+        elif key == "acquisition_value":
+            reasons[key] = ("acquisition value is unavailable (current rolling priority and transaction evidence are "
+                "unverified); it never affects ranking.")
+        elif key == "schedule":
+            reasons[key] = ("at least one comparable player has no persisted game in this window or a stale schedule "
+                "(unknown, never zero), so schedule is omitted for every pair.")
+        elif key == "opportunity":
+            reasons[key] = ("qualified fresh role evidence is missing for at least one comparable player, so "
+                "opportunity is omitted for every pair.")
+        else:
+            reasons[key] = "mandatory evidence is missing."
+    return reasons
+
+
+def explanation_supports(option: DropOption | None) -> bool:
+    """The explanation-consistency gate for a positive comparison (comparisons built outside the engine carry none)."""
+    return option is None or option.explanation is None or option.explanation.consistent
 
 
 def _fill_components(ctx: Context, members: list[Candidate], keys: list[str], spots: int | None) -> Components:
@@ -1389,7 +1477,7 @@ def _compare_no_drop(ctx: Context, player: Candidate) -> DropOption:
         reasons = ["No-drop impact unavailable: persisted Yahoo slot evidence does not establish an open non-injury roster spot."]
     else:
         reasons = ["No-drop impact unavailable: fresh manager roster, positional eligibility and supported values for every measured lineup player are required."]
-    return DropOption(
+    option = DropOption(
         player_id=None,
         player_name=f"No drop (move {move.player_name} to {move.to_slot})" if move is not None else "No drop (open roster slot)",
         before_score=before_score, after_score=after_score, net_improvement=net,
@@ -1406,6 +1494,13 @@ def _compare_no_drop(ctx: Context, player: Candidate) -> DropOption:
         open_roster_spots_after=open_before - 1 if possible else None,
         reasons=reasons,
     )
+    if net is not None:
+        option.explanation = explain_comparison(
+            mode=ctx.mode, add=player, drop=None, comparison=option,
+            window=(player.schedule.window_start, player.schedule.window_end),
+            omitted=omitted_components(ctx, list(effective)),
+            recompute=lambda subset: _scores(ctx, before_total, after_total, subset)[2])
+    return option
 
 
 def _undetermined_capacity_reason(ctx: Context) -> str:
@@ -1433,6 +1528,10 @@ def action_label(ctx: Context, row: Candidate, action: ActionType, drop_id: int 
         return "WATCH: The measured fit is positive, but the sample is too small for a supported move."
     if action == "HOLD":
         return "HOLD: No sufficiently supported move currently improves the roster."
+    explanation = row.comparison.explanation if row.comparison is not None else None
+    if explanation is not None and (row.net_improvement or 0) > 0 and not explanation.consistent:
+        prefix = "NEAR TIE — NO STRONG PREFERENCE" if explanation.near_tie else "DO NOT ADD"
+        return f"{prefix}: {explanation.statement}"
     first = next(iter(row.evidence_blockers), "required evidence is missing, stale or unverified.")
     return f"INSUFFICIENT EVIDENCE: {first}"
 
@@ -1469,6 +1568,101 @@ def classify_action(ctx: Context, result: Candidate, drop_id: int | None) -> Non
     result.recommended_action_type = action
     result.action_label = action_label(ctx, result, action, drop_id)
     result.move_intent, result.move_intent_detail = move_intent(ctx, result, action)
+    result.verdict, result.verdict_text = transaction_verdict(ctx, result)
+    result.evidence_dimensions = evidence_dimensions(ctx, result)
+
+
+def pair_text(ctx: Context, row: Candidate) -> str:
+    comparison = row.comparison
+    if comparison is None:
+        return f"ADD {row.player_name}"
+    if comparison.comparison_type == "MOVE_TO_IL_THEN_ADD":
+        return f"MOVE {comparison.moved_to_injury_slot_player_name} TO IL, THEN ADD {row.player_name}"
+    if comparison.player_id is None:
+        return f"ADD ONLY {row.player_name}"
+    return f"ADD {row.player_name} / DROP {comparison.player_name}"
+
+
+def transaction_verdict(ctx: Context, row: Candidate) -> tuple[TransactionVerdict, str]:
+    """The backend's answer to "should I make this move?" from the candidate's exact comparison and decision."""
+    comparison = row.comparison
+    net = comparison.net_improvement if comparison is not None else None
+    explanation = comparison.explanation if comparison is not None else None
+    action = row.recommended_action_type
+    pair = pair_text(ctx, row)
+    if action in SUPPORTED_ACTION_TYPES:
+        return "SUPPORTED_ADD", f"SUPPORTED ADD — {pair}, net {signed(net)} roster-index points."
+    if explanation is not None and explanation.near_tie:
+        return "NEAR_TIE", (f"NEAR TIE — NO STRONG PREFERENCE. Best measured comparison: {pair}, net {net:+.4f} "
+            f"(rounds to {net:+.2f}).")
+    if action == "WATCH":
+        blocker = next((note for note in row.evidence_blockers if note.startswith("Sample gate: ")), None)
+        detail = blocker.removeprefix("Sample gate: ").split(". A supported move needs")[0] if blocker else "a small sample"
+        return "WATCH_ONLY", (f"WATCH ONLY — No supported positive add/drop combination was found. Best measured "
+            f"comparison: {pair}, net {signed(net)}, blocked by: {detail}.")
+    if explanation is not None and net is not None and net > 0 and not explanation.consistent:
+        return "DO_NOT_ADD", f"DO NOT ADD — {pair} shows {signed(net)} index points, but {explanation.statement}"
+    if action == "HOLD":
+        unsupported = (f" Its {', '.join(COMPONENT_NAMES.get(key, key) for key in explanation.refuted)} edge does "
+            f"not hold in Yahoo fantasy points; without it the net is {signed(explanation.reconciled_net)}."
+            if explanation is not None and explanation.refuted else "")
+        return "DO_NOT_ADD", (f"DO NOT ADD — Best comparison is {pair}, net {signed(net)}.{unsupported} Keep your "
+            "current roster under this model.")
+    first = next(iter(row.evidence_blockers), "required evidence is missing, stale or unverified")
+    return "CANNOT_EVALUATE", f"CANNOT EVALUATE — {first.rstrip('.')}."
+
+
+def evidence_dimensions(ctx: Context, row: Candidate) -> list[EvidenceDimension]:
+    """Each evidence label with its dimension, so different label systems are never shown unlabeled together."""
+    assessment = sample_assessment(row, ctx.mode)
+    games, where = assessment.relevant_games, ("this season" if ctx.mode == "ros" else "in the last 14 days")
+    quality = row.data_quality.get("ros" if ctx.mode == "ros" else "recent")
+    if assessment.tier == "SUPPORTED" and assessment.passes:
+        sample = ("STRONG", f"Strong: {_game_count(games)} {where}")
+    elif assessment.tier == "SUPPORTED":
+        sample = ("STALE" if quality is not None and quality.state == "stale" else "TOO_SMALL",
+            f"Not supported: {assessment.detail}")
+    elif assessment.tier == "LIMITED" and assessment.passes:
+        sample = ("LIMITED_CORROBORATED", f"Limited but corroborated: {_game_count(games)} {where}; "
+            f"{assessment.corroborations_passed} of {len(assessment.corroborations)} corroborations passed")
+    elif assessment.tier == "LIMITED":
+        shortfall = (limited_shortfall(assessment.required, assessment.corroborations) if ctx.mode != "ros"
+            else "a limited current-season sample cannot be corroborated by older seasons")
+        sample = ("LIMITED_NOT_CORROBORATED", f"Limited, not corroborated: {_game_count(games)} {where}; {shortfall}")
+    else:
+        prefix = f"{games}-GAME SAMPLE — WATCH ONLY" if games in {1, 2} else "Too small"
+        sample = ("TOO_SMALL", f"{prefix}: {_game_count(games)} {where}; 7+ needed (5-6 only when corroborated)")
+    role = row.opportunity.current_role
+    role_state = role.quality.state if role is not None else "unavailable"
+    role_text = {
+        "available": f"Supported: {role.trend if role else ''} role, {row.opportunity.minutes or 0:.1f} recent minutes",
+        "partial": "Partial: fewer than three valid fresh games on each side, or conflicting directions",
+        "stale": "Stale: role evidence is older than seven days",
+    }.get(role_state, "Unavailable: no qualified role windows")
+    schedule = row.schedule
+    horizon = HORIZON_LABELS[ctx.mode]
+    if schedule.coverage == "STALE":
+        schedule_state, schedule_text = "STALE", "Stale: schedule import is older than seven days"
+    elif schedule.games_remaining is not None:
+        schedule_state, schedule_text = "ROWS_PRESENT_PARTIAL", (f"{_game_count(schedule.games_remaining)} in "
+            f"{horizon}: rows present, coverage partial (no completeness manifest)")
+    else:
+        schedule_state, schedule_text = "UNKNOWN", f"Unknown in {horizon} ({schedule.diagnostic_reason}); never zero"
+    status = row.data_quality.get("status")
+    stale_sources = [name for name, evidence in (("production", quality), ("Yahoo status", status))
+        if evidence is not None and evidence.state == "stale"]
+    freshness_state = "STALE" if stale_sources else "CURRENT"
+    return [
+        EvidenceDimension(key="PRODUCTION_SAMPLE", label="PRODUCTION SAMPLE", state=sample[0], text=sample[1],
+            detail=assessment.detail),
+        EvidenceDimension(key="CURRENT_ROLE", label="CURRENT ROLE", state=role_state.upper(), text=role_text,
+            detail=role.quality.detail if role is not None else ""),
+        EvidenceDimension(key="SCHEDULE", label="SCHEDULE", state=schedule_state, text=schedule_text),
+        EvidenceDimension(key="SOURCE_FRESHNESS", label="SOURCE FRESHNESS", state=freshness_state,
+            text=("Stale: " + ", ".join(stale_sources)) if stale_sources else "Current: production and Yahoo status"),
+        EvidenceDimension(key="TRANSACTION_VERDICT", label="TRANSACTION VERDICT", state=row.verdict,
+            text=row.verdict_text),
+    ]
 
 
 SUPPORTED_ACTION_TYPES = frozenset({"ADD_ONLY", "MOVE_TO_IL_THEN_ADD", "ADD_DROP"})
@@ -1477,38 +1671,27 @@ HORIZON_LABELS = {"this_week": "Rest of Week", "next_7_days": "Next 7 Days", "ne
 
 
 def move_intent(ctx: Context, row: Candidate, action: ActionType) -> tuple[str, str]:
-    """What a supported move is for. Uses only the existing decision and hold labels; it never changes a gate."""
+    """What a supported move is for. The reason comes from the pair's measured contributions (never a component
+    outside the common mask or with a nonpositive contribution); it never changes a gate."""
     if action not in SUPPORTED_ACTION_TYPES:
         return {"WATCH": "WATCH", "HOLD": "HOLD"}.get(action, "INSUFFICIENT_EVIDENCE"), ""
-    led = ("schedule and opportunity" if row.recommended_action == "STREAM" else "measured production and roster fit")
-    if ctx.mode == "ros":
-        return "LONGER_TERM_ADD", ("Rest of Season Outlook: supported by current-season production, current role, the "
-            "persisted remaining schedule and roster fit. Season Evidence is historical, not a projection.")
-    if row.recommended_action == "ADD" and row.hold_type == "longer_term_hold":
-        return "LONGER_TERM_ADD", (f"Supported in {HORIZON_LABELS[ctx.mode]} by {led}, with longer-term Season Evidence "
-            "(20+ games, top-40% production, 24+ minutes). Historical evidence, not a projection.")
+    explanation = row.comparison.explanation if row.comparison is not None else None
+    because = explanation.primary_reason if explanation is not None else "the measured roster-index gain"
     horizon = HORIZON_LABELS[ctx.mode]
     scheduled = bool(row.schedule.games_remaining)
+    # Without persisted games in the horizon a zero is never asserted, and the schedule is not part of the support.
+    unscheduled = "" if scheduled or ctx.mode == "ros" else (f" Games for {row.player_name} in {horizon} are not "
+        f"established ({row.schedule.diagnostic_reason}), so the schedule is not part of this support.")
+    if ctx.mode == "ros":
+        return "LONGER_TERM_ADD", (f"Rest of Season Outlook move. Main reason: {because}. Season Evidence is "
+            "historical, not a projection.")
+    if row.recommended_action == "ADD" and row.hold_type == "longer_term_hold":
+        return "LONGER_TERM_ADD", (f"Supported in {horizon}. Main reason: {because}. {row.player_name} also has "
+            "longer-term Season Evidence (20+ games, top-40% production, 24+ minutes); historical, not a projection."
+            f"{unscheduled}")
     if ctx.mode == "next_14_days":
-        # Names only the evidence behind the move: role only when it gates the move (STREAM), the persisted schedule
-        # only when it has games for this add. Never a projection, a matchup week or a complete schedule.
-        evidence = ["current production", *(["role"] if row.recommended_action == "STREAM" else []), "roster impact"]
-        if scheduled:
-            return "TWO_WEEK_STREAM", (
-                f"Two-week move supported by {_series([*evidence, 'persisted Next 14 Days schedule evidence'])}.")
-        return "TWO_WEEK_STREAM", (f"Two-week move supported by {_series(evidence)}. Games for {row.player_name} in "
-            f"{horizon} are not established ({row.schedule.diagnostic_reason}), so the schedule is not part of this support.")
-    # Without persisted games in the horizon the support is production and roster fit; a zero is never asserted.
-    unscheduled = "" if scheduled else (f" Games for {row.player_name} in {horizon} are not established "
-        f"({row.schedule.diagnostic_reason}), so this support rests on measured production and roster fit, not the schedule.")
-    return "STREAM", f"Short-term move supported in {horizon} by {led}.{unscheduled}"
-
-
-def _series(items: list[str]) -> str:
-    """'a', 'a and b', 'a, b, and c'."""
-    if len(items) < 3:
-        return " and ".join(items)
-    return f"{', '.join(items[:-1])}, and {items[-1]}"
+        return "TWO_WEEK_STREAM", f"Two-week move. Main reason: {because}.{unscheduled}"
+    return "STREAM", f"Short-term move in {horizon}. Main reason: {because}.{unscheduled}"
 
 
 def enrich(ctx: Context, player: Candidate, drop_id: int | None = None) -> Candidate:
@@ -1528,8 +1711,18 @@ def enrich(ctx: Context, player: Candidate, drop_id: int | None = None) -> Candi
         chosen = _decision_pair(ctx, player, options)
         if chosen is not None:
             return chosen
-        result.best_drop_options = options[:3]
-        result.comparison = next(iter(options), None)
+        # Without a supported pair the add shows its best comparison that the explanation gate does not refute: a
+        # positive index that fails in Yahoo fantasy points is not this add's best measured answer.
+        fallback = (next((option for option in options if option.net_improvement is not None
+                and option.net_improvement > 0 and explanation_supports(option)), None)
+            or next((option for option in options if option.net_improvement is not None
+                and (option.net_improvement <= 0 or explanation_supports(option))), None)
+            or next(iter(options), None))
+        result.best_drop_options = ([fallback, *[row for row in options if row is not fallback]][:3]
+            if fallback is not None else [])
+        result.comparison = fallback
+        result.drop_alternatives = drop_alternatives(ctx, player, options, fallback)
+        result.drop_choice = drop_choice_text(result, fallback, result.drop_alternatives)
     else:
         result.best_drop_options = []
         result.comparison = None
@@ -1568,6 +1761,12 @@ def enrich(ctx: Context, player: Candidate, drop_id: int | None = None) -> Candi
             gate_notes.append(status_gate_note(status_gaps))
         else:
             result.recommended_action = "PASS"
+    elif not explanation_supports(result.comparison):
+        # A positive index whose explanation cannot be reconciled (or a near tie) is never a supported move or WATCH.
+        result.recommended_action = "INSUFFICIENT EVIDENCE"
+        gate_notes.append(result.comparison.explanation.blocker or EXPLANATION_GATE)
+        if status_unverified:
+            gate_notes.append(status_gate_note(status_gaps))
     elif not sufficient_sample(result, ctx.mode) or (selected and not sufficient_sample(selected, ctx.mode)):
         result.recommended_action = "WATCH" if result.current_season_games > 0 else "INSUFFICIENT EVIDENCE"
         gate_notes.append(sample_gate_note(ctx.mode, [text for text in (sample_gap(row, ctx.mode) for row in compared) if text]))
@@ -1660,12 +1859,29 @@ class PairOutcome:
         return self.supported and self.pair.recommended_action in ACTIONABLE_DECISIONS and (self.net or 0) > 0
 
 
+def _short_blocker(note: str) -> str:
+    return note.split(". A supported move needs")[0].split(". Blank, unrecognized")[0]
+
+
+def drop_alternatives(ctx: Context, add: Candidate, options: list[DropOption], chosen: DropOption | None) -> list:
+    """Alternatives for "why this drop"; a higher-index drop that was not used names the gate that stopped it."""
+    rows = alternatives(options, chosen)
+    for row in rows:
+        if row.margin is not None and row.margin < 0 and not row.note:
+            outcome = evaluate_pair(ctx, ctx.players[add.player_id], row.player_id)
+            if not outcome.strong:
+                row.note = _short_blocker(next(iter(outcome.pair.evidence_blockers), "not supported"))
+    return rows
+
+
 def evaluate_pair(ctx: Context, add: Candidate, drop_id: int) -> PairOutcome:
     pair = enrich(ctx, add, drop_id)
     drop = ctx.players[drop_id]
     blockers = transaction_blockers(ctx, pair, drop)
     if pair.comparison is None or pair.comparison.net_improvement is None:
         blockers.append("Numeric swap impact is unavailable")
+    elif pair.comparison.net_improvement > 0 and not explanation_supports(pair.comparison):
+        blockers.append(gate_category(pair.comparison.explanation.blocker or EXPLANATION_GATE, ctx.mode))
     if pair.recommended_action == "INSUFFICIENT EVIDENCE":
         blockers.append("Phase-1 decision is INSUFFICIENT EVIDENCE")
     supported = not blockers and pair.recommended_action in {"ADD", "STREAM", "MUST ADD", "PASS"}
@@ -1690,6 +1906,8 @@ def _decision_pair(ctx: Context, player: Candidate, options: list[DropOption]) -
         first = first or outcome
         if outcome.strong:
             outcome.pair.best_drop_options = [option, *[row for row in options if row.player_id != option.player_id]][:3]
+            outcome.pair.drop_alternatives = drop_alternatives(ctx, player, options, option)
+            outcome.pair.drop_choice = drop_choice_text(outcome.pair, option, outcome.pair.drop_alternatives)
             return outcome.pair
     if first is not None and first.pair.recommended_action in ACTIONABLE_DECISIONS:
         # Defensive: a pair the optimizer excludes is never presented as a strong action.
@@ -1837,6 +2055,12 @@ def analyze_transactions(ctx: Context) -> TransactionAnalysis:
     watch.sort(key=order)
     best = next((swap for swap in supported if swap.comparison.net_improvement > 0
         and swap.decision in ACTIONABLE_DECISIONS), None)
+    # "Why this drop?" for every pair the page shows: the add's other measured drops (memoized comparisons).
+    for swap in [*supported[:5], *watch[:5], *([best] if best is not None else [])]:
+        options = sorted((compare(ctx, ctx.players[swap.add_player.player_id], pid) for pid in swap_roster_ids(ctx)),
+            key=lambda row: (row.net_improvement is None, -(row.net_improvement or 0), row.player_id))
+        swap.add_player.drop_alternatives = drop_alternatives(ctx, swap.add_player, options, swap.comparison)
+        swap.add_player.drop_choice = drop_choice_text(swap.add_player, swap.comparison, swap.add_player.drop_alternatives)
 
     fills: list[FillRecommendation] = []
     fill_watch: list[FillRecommendation] = []
@@ -2116,6 +2340,17 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
     logs_by_id: dict[str, list[PlayerGameLog]] = defaultdict(list)
     for log in logs:
         logs_by_id[log.nba_player_id].append(log)
+    # Season-wide persisted log counts and the league log import's freshness: they tell a window with no games
+    # ("no games played") apart from a stale import or a player whose season stats count more games than logs.
+    log_counts = dict((await session.execute(select(PlayerGameLog.nba_player_id, func.count()).where(
+        PlayerGameLog.nba_player_id.in_(nba_ids), PlayerGameLog.season == season,
+        PlayerGameLog.season_type == "Regular Season").group_by(PlayerGameLog.nba_player_id))).all())
+    log_imported_at, latest_log_game = (await session.execute(
+        select(func.max(PlayerGameLog.imported_at), func.max(PlayerGameLog.game_date)).where(
+            PlayerGameLog.season == season, PlayerGameLog.season_type == "Regular Season"))).one()
+    log_state = freshness(log_imported_at, now, 7)
+    if latest_log_game is not None and latest_log_game < today - timedelta(days=7):
+        log_state = "stale"
     recent_start = today - timedelta(days=RECENT_LOOKBACK_DAYS)
     teams = list((await session.scalars(select(NbaTeam))).all())
     abbreviations = {row.nba_team_id: row.abbreviation for row in teams}
@@ -2371,10 +2606,13 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
             limitations=list(BASE_LIMITATIONS), data_quality=quality_fields, measured=measured,
         )
         players[pid].status_gate_supported = status_gap(players[pid], now) is None
+        logged = log_counts.get(identity.nba_player_id, 0) if identity.nba_player_id else 0
         players[pid].form = recent_form(form_logs, current_row, prior_row, fields, now, today,
             recent_quality=quality_fields["recent"], season_quality=quality_fields["ros"],
             starts=opportunity.current_role.starts if opportunity.current_role else None,
-            season_usage=opportunity.current_role.season_usage if opportunity.current_role else None)
+            season_usage=opportunity.current_role.season_usage if opportunity.current_role else None,
+            mapped=bool(identity.nba_player_id and nba_player), logs_current=log_state == "available",
+            logs_complete=current_row is None or current_row.games_played <= logged)
         players[pid].sample = assess_sample(players[pid], mode)
     value_distribution = sorted(row.components.player_value for row in players.values() if row.components.player_value is not None)
     schedule_distribution = sorted(row.schedule.games_remaining for row in players.values() if row.schedule.games_remaining is not None and row.data_quality["schedule"].state != "stale")
@@ -2456,15 +2694,9 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
         mode=mode, window_start=today, window_end=window_end,
         roster_state=quality["roster"].state, settings_state=settings_state,
     )
-    log_imported_at, latest_log_game = (await session.execute(
-        select(func.max(PlayerGameLog.imported_at), func.max(PlayerGameLog.game_date)).where(
-            PlayerGameLog.season == season, PlayerGameLog.season_type == "Regular Season"))).one()
     pool_imported_at = max((observation.imported_at for observation, _ in observations), default=None)
     stats_imported_at = max((row.imported_at for row in stats_rows), default=None)
     schedule_imported_at = max((summary[2] for summary in schedule_summary.values()), default=None)
-    log_state = freshness(log_imported_at, now, 7)
-    if latest_log_game is not None and latest_log_game < today - timedelta(days=7):
-        log_state = "stale"
     saved_slots = len(manager_ids) - len(roster_capacity.unassigned_player_ids)
     ctx.evidence_freshness = [
         FreshnessItem(source="Yahoo league settings", state=quality["settings"].state,
@@ -2659,12 +2891,18 @@ def build_board(ctx: Context, league_key: str, team_key: str, mode: Mode, drop_i
         supported = [compare(ctx, row, player.player_id) for row in eligible_rows]
         measured = [option.net_improvement for option in supported if option.net_improvement is not None]
         if ctx.roster_ready and measured:
-            # A strong decision needs a positive net, so only positive pairs are enriched (same result, less work).
-            player.roster_decision = "review_replacement" if any(
-                (option.net_improvement or 0) > 0
-                and enrich(ctx, row, player.player_id).recommended_action in ACTIONABLE_DECISIONS
-                for row, option in zip(eligible_rows, supported)
-            ) else "keep_on_measured_model" if max(measured) <= 0 else "unavailable"
+            # The same gated exact-pair decision the optimizer uses; only positive pairs can be strong or WATCH.
+            label = "keep_on_measured_model"
+            for row, option in zip(eligible_rows, supported):
+                if (option.net_improvement or 0) <= 0:
+                    continue
+                decision = enrich(ctx, row, player.player_id).recommended_action
+                if decision in ACTIONABLE_DECISIONS:
+                    label = "review_replacement"
+                    break
+                if decision == "WATCH":
+                    label = "watch_replacement"
+            player.roster_decision = label
     if ctx.team_needs is not None and drop_id is None:
         for need in ctx.team_needs.needs:
             need.compatible_candidate_ids = [row.player_id for row in sorted(

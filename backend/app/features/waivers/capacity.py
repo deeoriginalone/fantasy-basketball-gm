@@ -556,7 +556,10 @@ def analyze_team_needs(
     open_counts = Counter(uncovered)
 
     days: list[LineupDay] = []
+    # Dates with at least one open instance of a slot (never above the date count) and the open instances summed
+    # over dates (two C slots open on one date count 2). Text that says "dates" uses only the first.
     day_gaps: Counter[str] = Counter()
+    day_slot_games: Counter[str] = Counter()
     if mode == "ros":
         day_state, day_detail = "unsupported", (
             "Rest of Season Outlook covers the whole season; daily lineup coverage is calculated only for Rest of Week, Next 7 Days and Next 14 Days.")
@@ -577,7 +580,8 @@ def analyze_team_needs(
                 days.append(LineupDay(date=day, players_with_games=len(playing),
                     fillable_starting_slots=len(starting_slots) - len(open_today),
                     starting_slots_required=len(starting_slots), open_starting_slots=open_today))
-                day_gaps.update(open_today)
+                day_gaps.update(set(open_today))
+                day_slot_games.update(open_today)
                 day += timedelta(days=1)
             day_state = "partial"
             day_detail = ("Uses persisted per-player schedule rows (coverage PARTIAL; no completeness manifest). A day's open "
@@ -595,6 +599,7 @@ def analyze_team_needs(
             weakened_by_injury=bool(weakened[slot]), injured_player_ids=injured_ids,
             need_score=round(100 * open_counts[slot] / required, 2),
             open_slot_days=day_gaps[slot] if day_state == "partial" else None,
+            open_slot_games=day_slot_games[slot] if day_state == "partial" else None,
             detail=(f"{required - open_counts[slot]} of {required} {slot} starting slot(s) coverable by lineup-eligible players."
                 + (" Weakened by injury." if weakened[slot] else "")),
         ))
@@ -624,11 +629,14 @@ def analyze_team_needs(
         for slot, gap_days in sorted(day_gaps.items(), key=lambda item: (-item[1], need_order(item[0]))):
             if slot in open_counts:
                 continue
+            slot_games = day_slot_games[slot]
             needs.append(TeamNeed(
-                priority=len(needs) + 1, slot=slot, kind="LINEUP_DAY_GAP", count=gap_days,
+                priority=len(needs) + 1, slot=slot, kind="LINEUP_DAY_GAP", count=gap_days, slot_games=slot_games,
                 positions=slot_core_positions(slot),
                 reason=(f"{slot} has no lineup-eligible player with a persisted game on {gap_days} of {len(days)} "
-                    "dates in this window."),
+                    "dates in this window"
+                    + (f" ({slot_games} open {slot} slot-games across its {starting_slots.count(slot)} slots)"
+                        if slot_games != gap_days else "") + "."),
             ))
     fill_capacity = capacity.additions_after_injury_moves or 0
     structural = sum(open_counts.values())

@@ -2,6 +2,10 @@ export type WaiverMode = "this_week" | "next_7_days" | "next_14_days" | "ros";
 export type SampleTier = "INSUFFICIENT" | "VERY_LOW" | "LIMITED" | "SUPPORTED";
 export type FormTrendLabel = "IMPROVING" | "DECLINING" | "STABLE" | "MIXED" | "INSUFFICIENT EVIDENCE";
 export type MoveIntent = "STREAM" | "TWO_WEEK_STREAM" | "LONGER_TERM_ADD" | "WATCH" | "HOLD" | "INSUFFICIENT_EVIDENCE";
+/** The backend's answer to "should I make this move?"; the page never infers one. */
+export type TransactionVerdict = "SUPPORTED_ADD" | "WATCH_ONLY" | "NEAR_TIE" | "DO_NOT_ADD" | "CANNOT_EVALUATE";
+export type FormReason = "NO_GAMES_IN_WINDOW" | "GAME_LOGS_MISSING" | "MAPPING_UNRESOLVED" | "DATA_STALE"
+  | "SCORING_FIELD_MISSING" | "SCORING_UNSUPPORTED" | "NO_PREVIOUS_SEASON";
 
 /** One backend-computed look-back evidence window; never a decision horizon. */
 export interface FormWindow {
@@ -24,6 +28,9 @@ export interface FormWindow {
   as_of: string | null;
   state: QualityState;
   detail: string;
+  /** Why fantasy_ppg is missing or stale; rendered instead of a bare "n/a". */
+  reason?: FormReason | null;
+  reason_label?: string;
 }
 
 export interface FormTrend {
@@ -82,6 +89,131 @@ export interface OptionForm {
   trend: FormTrendLabel;
   next_7_games: number | null;
   next_14_games: number | null;
+  last_7_reason?: string | null;
+  last_14_reason?: string | null;
+  last_30_reason?: string | null;
+  season_reason?: string | null;
+  previous_season_reason?: string | null;
+}
+
+/** The per-game production a comparison actually used, with its provenance. */
+export interface ProductionBasis {
+  value: number | null;
+  basis: "RECENT_BLENDED" | "RECENT_ONLY" | "SEASON_EVIDENCE" | "PREVIOUS_SEASON_FALLBACK" | "UNAVAILABLE";
+  label: string;
+  percentile: number | null;
+  window_value: number | null;
+  window_games: number;
+  window_weight: number | null;
+  prior_value: number | null;
+  prior_games: number;
+  prior_season: string | null;
+  prior_weight: number | null;
+  current_season_value: number | null;
+  current_season_games: number;
+  math: string;
+}
+
+export interface ComponentContribution {
+  component: string;
+  before: number;
+  after: number;
+  delta: number;
+  effective_weight: number;
+  weighted_contribution: number;
+}
+
+export interface ExplanationCheck {
+  key: "ARITHMETIC" | "CLAIMS_MEASURED" | "COMPENSATION" | "NEAR_TIE";
+  passed: boolean;
+  detail: string;
+}
+
+/** Backend-owned explanation of one exact comparison and its consistency checks. */
+export interface PairExplanation {
+  horizon: string;
+  window_start: string | null;
+  window_end: string | null;
+  comparison_type: "ADD_DROP" | "ADD_ONLY" | "MOVE_TO_IL_THEN_ADD";
+  add_player_id: number;
+  add_name: string;
+  drop_player_id: number | null;
+  drop_name: string | null;
+  add_production: ProductionBasis;
+  drop_production: ProductionBasis | null;
+  production_gap: number | null;
+  add_games: number | null;
+  drop_games: number | null;
+  add_window_points: number | null;
+  drop_window_points: number | null;
+  window_points_gap: number | null;
+  starting_slots_before: number | null;
+  starting_slots_after: number | null;
+  starting_slots_required: number | null;
+  contributions: ComponentContribution[];
+  contribution_sum: number | null;
+  net: number | null;
+  favorable: string[];
+  unfavorable: string[];
+  omitted: Record<string, string>;
+  compensating: string[];
+  refuted: Record<string, string>;
+  net_without: Record<string, number | null>;
+  reconciled_net: number | null;
+  near_tie: boolean;
+  fragile: boolean;
+  prior_season_driven: boolean;
+  checks: ExplanationCheck[];
+  consistent: boolean;
+  statement: string;
+  primary_reason: string;
+  tradeoffs: string[];
+  primary_tradeoff: string | null;
+  blocker: string | null;
+}
+
+export interface DropAlternative {
+  player_id: number;
+  player_name: string;
+  net: number | null;
+  margin: number | null;
+  consistent: boolean;
+  near_tie: boolean;
+  note: string;
+}
+
+/** One labeled evidence dimension (production sample, current role, schedule, freshness, verdict). */
+export interface EvidenceDimension {
+  key: "PRODUCTION_SAMPLE" | "CURRENT_ROLE" | "SCHEDULE" | "SOURCE_FRESHNESS" | "TRANSACTION_VERDICT";
+  label: string;
+  state: string;
+  text: string;
+  detail: string;
+}
+
+/** The exact comparison behind an option card. */
+export interface OptionPair {
+  comparison_type: "ADD_DROP" | "ADD_ONLY" | "MOVE_TO_IL_THEN_ADD";
+  drop_player_id: number | null;
+  drop_player_name: string | null;
+  net: number | null;
+  add_ppg: number | null;
+  drop_ppg: number | null;
+  basis_label: string;
+  add_games: number | null;
+  drop_games: number | null;
+  window_points_gap: number | null;
+  starting_slots_before: number | null;
+  starting_slots_after: number | null;
+  starting_slots_required: number | null;
+  statement: string;
+  primary_reason: string;
+  primary_tradeoff: string | null;
+  blocker: string | null;
+  consistent: boolean;
+  near_tie: boolean;
+  alternatives: DropAlternative[];
+  drop_choice: string;
 }
 export type WaiverSampleLabel = "EXCELLENT" | "GOOD" | "LIMITED" | "VERY LIMITED" | "INSUFFICIENT FOR STRONG RECOMMENDATION" | "NO CURRENT-SEASON EVIDENCE";
 export type WaiverActionType = "ADD_ONLY" | "MOVE_TO_IL_THEN_ADD" | "ADD_DROP" | "WATCH" | "HOLD" | "INSUFFICIENT_EVIDENCE";
@@ -277,12 +409,21 @@ export interface DecisionOption {
   roster_measured_count: number;
   form?: OptionForm | null;
   move_intent?: MoveIntent | null;
+  verdict?: TransactionVerdict;
+  verdict_text?: string;
+  /** One-line answer: ADD/DROP, WATCH, DO NOT ADD, ADD ONLY / IL move, or cannot evaluate. */
+  headline?: string;
+  pair?: OptionPair | null;
+  current_season_games?: number;
+  evidence_dimensions?: EvidenceDimension[];
 }
 
 export interface OptionGroupPick {
   key: OptionGroupKey;
+  /** Backend-qualified by the pick's verdict ("BEST AVAILABLE GUARD TO MONITOR — not a supported add"). */
   title: string;
   player_id: number | null;
+  verdict?: TransactionVerdict | null;
   empty_reason: string | null;
 }
 
@@ -417,7 +558,10 @@ export interface SlotCoverage {
   weakened_by_injury: boolean;
   injured_player_ids: number[];
   need_score: number | null;
+  /** Dates with an open instance of this slot (never above the window's date count). */
   open_slot_days: number | null;
+  /** Open slot instances summed over those dates. */
+  open_slot_games?: number | null;
   detail: string;
 }
 
@@ -434,6 +578,7 @@ export interface TeamNeed {
   slot: string;
   kind: "OPEN_STARTING_SLOT" | "INJURY_WEAKENED" | "LINEUP_DAY_GAP" | "BENCH_DEPTH";
   count: number;
+  slot_games?: number | null;
   positions: string[];
   reason: string;
   compatible_candidate_ids: number[];
@@ -642,6 +787,7 @@ export interface WaiverDrop {
   roster_spots_basis?: number | null;
   open_roster_spots_before?: number | null;
   open_roster_spots_after?: number | null;
+  explanation?: PairExplanation | null;
 }
 
 export type YahooStatusDecisionState = "EXCLUDED" | "UNCERTAIN" | "NO_CURRENT_YAHOO_DESIGNATION" | "UNKNOWN";
@@ -736,7 +882,7 @@ export interface WaiverCandidate {
   comparison: WaiverDrop | null;
   best_drop_options: WaiverDrop[];
   net_improvement: number | null;
-  roster_decision: "review_replacement" | "keep_on_measured_model" | "unavailable";
+  roster_decision: "review_replacement" | "watch_replacement" | "keep_on_measured_model" | "unavailable";
   reasons: string[];
   limitations: string[];
   data_quality: Record<string, WaiverEvidence>;
@@ -758,6 +904,11 @@ export interface WaiverCandidate {
   sample?: SampleAssessment | null;
   move_intent?: MoveIntent;
   move_intent_detail?: string;
+  verdict?: TransactionVerdict;
+  verdict_text?: string;
+  drop_alternatives?: DropAlternative[];
+  drop_choice?: string;
+  evidence_dimensions?: EvidenceDimension[];
 }
 
 export interface FillRecommendation {

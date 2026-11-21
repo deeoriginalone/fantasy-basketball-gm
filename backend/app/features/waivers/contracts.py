@@ -69,10 +69,28 @@ PositionFamily = Literal["GUARD", "WING_FORWARD", "CENTER"]
 OptionGroupKey = Literal[
     "BEST_GUARD", "BEST_WING_FORWARD", "BEST_CENTER", "BEST_MULTI_POSITION", "BEST_SHORT_TERM", "BEST_LONGER_TERM",
 ]
+# The answer every option gives to "should I make this move?" (backend-owned; the page never infers one).
+TransactionVerdict = Literal["SUPPORTED_ADD", "WATCH_ONLY", "NEAR_TIE", "DO_NOT_ADD", "CANNOT_EVALUATE"]
+# Why a form window has no fantasy PPG; the page shows the reason instead of a bare "n/a".
+FormReason = Literal[
+    "NO_GAMES_IN_WINDOW", "GAME_LOGS_MISSING", "MAPPING_UNRESOLVED", "DATA_STALE", "SCORING_FIELD_MISSING",
+    "SCORING_UNSUPPORTED", "NO_PREVIOUS_SEASON",
+]
+FORM_REASON_LABELS: dict[str, str] = {
+    "NO_GAMES_IN_WINDOW": "No games played in window",
+    "GAME_LOGS_MISSING": "Game logs missing",
+    "MAPPING_UNRESOLVED": "Mapping unresolved",
+    "DATA_STALE": "Data stale",
+    "SCORING_FIELD_MISSING": "Required scoring field missing",
+    "SCORING_UNSUPPORTED": "Scoring settings unavailable",
+    "NO_PREVIOUS_SEASON": "No previous-season stats",
+}
+ProductionBasisCode = Literal["RECENT_BLENDED", "RECENT_ONLY", "SEASON_EVIDENCE", "PREVIOUS_SEASON_FALLBACK", "UNAVAILABLE"]
+EvidenceDimensionKey = Literal["PRODUCTION_SAMPLE", "CURRENT_ROLE", "SCHEDULE", "SOURCE_FRESHNESS", "TRANSACTION_VERDICT"]
 RESOLVED_IDENTITY_STATES = frozenset({
     "EXACT_ID", "EXACT_NAME_TEAM", "NORMALIZED_NAME_TEAM", "KNOWN_ALIAS_TEAM", "TEAM_CHANGE_SUPPORTED",
 })
-MODEL_VERSION = "waiver-horizon-evidence-phase6"
+MODEL_VERSION = "waiver-decision-integrity-phase7"
 
 
 class Evidence(BaseModel):
@@ -207,6 +225,9 @@ class FormWindow(BaseModel):
     as_of: datetime | None = None
     state: QualityState = "missing"
     detail: str = ""
+    # Why `fantasy_ppg` is missing (or stale); never a bare "n/a".
+    reason: FormReason | None = None
+    reason_label: str = ""
 
 
 class FormTrend(BaseModel):
@@ -416,6 +437,108 @@ class DataGap(BaseModel):
     root_cause: RootCause
 
 
+class ProductionBasis(BaseModel):
+    """The per-game Yahoo-rule production a comparison actually used (the value behind the production percentile),
+    with its provenance. Weekly horizons blend the last 14 days with the prior season (n/(n+10)); Rest of Season
+    Outlook uses current-season Season Evidence. Historical evidence, never a projection."""
+    value: float | None = None
+    basis: ProductionBasisCode = "UNAVAILABLE"
+    label: str = "Production unavailable"
+    percentile: float | None = None
+    window_value: float | None = None
+    window_games: int = 0
+    window_weight: float | None = None
+    prior_value: float | None = None
+    prior_games: int = 0
+    prior_season: str | None = None
+    prior_weight: float | None = None
+    current_season_value: float | None = None
+    current_season_games: int = 0
+    math: str = ""
+
+
+class ComponentContribution(BaseModel):
+    component: str
+    before: float
+    after: float
+    delta: float
+    effective_weight: float
+    weighted_contribution: float
+
+
+class ExplanationCheck(BaseModel):
+    key: Literal["ARITHMETIC", "CLAIMS_MEASURED", "COMPENSATION", "NEAR_TIE"]
+    passed: bool
+    detail: str
+
+
+class PairExplanation(BaseModel):
+    """Backend-owned explanation of one exact comparison and its consistency checks.
+
+    The contributions reproduce the returned net. A favorable claim is made only for a component in the common mask
+    with a positive weighted contribution. When the add's production is lower, every compensating claim must hold
+    in the league's own scoring unit (window Yahoo fantasy points), or the positive net is not supported."""
+    horizon: str
+    window_start: date | None = None
+    window_end: date | None = None
+    comparison_type: ComparisonType = "ADD_DROP"
+    add_player_id: int
+    add_name: str
+    drop_player_id: int | None = None
+    drop_name: str | None = None
+    add_production: ProductionBasis
+    drop_production: ProductionBasis | None = None
+    production_gap: float | None = None
+    add_games: int | None = None
+    drop_games: int | None = None
+    add_window_points: float | None = None
+    drop_window_points: float | None = None
+    window_points_gap: float | None = None
+    starting_slots_before: int | None = None
+    starting_slots_after: int | None = None
+    starting_slots_required: int | None = None
+    contributions: list[ComponentContribution] = Field(default_factory=list)
+    contribution_sum: float | None = None
+    net: float | None = None
+    favorable: list[str] = Field(default_factory=list)
+    unfavorable: list[str] = Field(default_factory=list)
+    omitted: dict[str, str] = Field(default_factory=dict)
+    compensating: list[str] = Field(default_factory=list)
+    refuted: dict[str, str] = Field(default_factory=dict)
+    net_without: dict[str, float | None] = Field(default_factory=dict)
+    reconciled_net: float | None = None
+    near_tie: bool = False
+    fragile: bool = False
+    prior_season_driven: bool = False
+    checks: list[ExplanationCheck] = Field(default_factory=list)
+    consistent: bool = False
+    statement: str = ""
+    primary_reason: str = ""
+    tradeoffs: list[str] = Field(default_factory=list)
+    primary_tradeoff: str | None = None
+    blocker: str | None = None
+
+
+class DropAlternative(BaseModel):
+    """Another roster drop measured for the same add (the page's "why this drop" evidence)."""
+    player_id: int
+    player_name: str
+    net: float | None = None
+    margin: float | None = None
+    consistent: bool = False
+    near_tie: bool = False
+    note: str = ""
+
+
+class EvidenceDimension(BaseModel):
+    """One labeled evidence dimension, so labels from different systems are never shown unlabeled side by side."""
+    key: EvidenceDimensionKey
+    label: str
+    state: str
+    text: str
+    detail: str = ""
+
+
 class DropOption(BaseModel):
     player_id: int | None
     player_name: str
@@ -437,6 +560,7 @@ class DropOption(BaseModel):
     roster_spots_basis: int | None = None
     open_roster_spots_before: int | None = None
     open_roster_spots_after: int | None = None
+    explanation: PairExplanation | None = None
 
 
 class RosterSlot(BaseModel):
@@ -534,7 +658,10 @@ class SlotCoverage(BaseModel):
     weakened_by_injury: bool = False
     injured_player_ids: list[int] = Field(default_factory=list)
     need_score: float | None = None
+    # Dates in the window with at least one of this slot's starting instances uncovered (never above the date count).
     open_slot_days: int | None = None
+    # Uncovered slot instances summed over those dates (two C slots open on one date count 2).
+    open_slot_games: int | None = None
     detail: str
 
 
@@ -550,7 +677,9 @@ class TeamNeed(BaseModel):
     priority: int
     slot: str
     kind: Literal["OPEN_STARTING_SLOT", "INJURY_WEAKENED", "LINEUP_DAY_GAP", "BENCH_DEPTH"]
+    # LINEUP_DAY_GAP: dates in the window (never above the date count); other kinds: slot instances.
     count: int
+    slot_games: int | None = None
     positions: list[str] = Field(default_factory=list)
     reason: str
     compatible_candidate_ids: list[int] = Field(default_factory=list)
@@ -730,7 +859,9 @@ class Candidate(BaseModel):
     data_quality: dict[str, Evidence]
     ranking_value: RankingEvidence = Field(default_factory=RankingEvidence)
     comparison: DropOption | None = None
-    roster_decision: Literal["review_replacement", "keep_on_measured_model", "unavailable"] = "unavailable"
+    # Derived from the same gated exact-pair decisions the optimizer uses: a supported replacement exists, only
+    # WATCH (positive but sample-blocked) replacements exist, no replacement improves the roster, or nothing measured.
+    roster_decision: Literal["review_replacement", "watch_replacement", "keep_on_measured_model", "unavailable"] = "unavailable"
     recommended_action_type: ActionType = "INSUFFICIENT_EVIDENCE"
     action_label: str = ""
     requires_drop: bool | None = None
@@ -749,6 +880,12 @@ class Candidate(BaseModel):
     sample: SampleAssessment | None = None
     move_intent: MoveIntent = "INSUFFICIENT_EVIDENCE"
     move_intent_detail: str = ""
+    verdict: TransactionVerdict = "CANNOT_EVALUATE"
+    verdict_text: str = ""
+    # Other measured drops for this add, best first, with the margin to the chosen drop.
+    drop_alternatives: list[DropAlternative] = Field(default_factory=list)
+    drop_choice: str = ""
+    evidence_dimensions: list[EvidenceDimension] = Field(default_factory=list)
 
 
 def availability_class(row: Candidate) -> str:
@@ -775,6 +912,37 @@ class OptionForm(BaseModel):
     trend: FormTrendLabel = "INSUFFICIENT EVIDENCE"
     next_7_games: int | None = None
     next_14_games: int | None = None
+    # Reason labels for windows without a value (None when a value is present and current).
+    last_7_reason: str | None = None
+    last_14_reason: str | None = None
+    last_30_reason: str | None = None
+    season_reason: str | None = None
+    previous_season_reason: str | None = None
+
+
+class OptionPair(BaseModel):
+    """The exact comparison behind an option card: who to drop (or no drop), the net and why, on one basis."""
+    comparison_type: ComparisonType = "ADD_DROP"
+    drop_player_id: int | None = None
+    drop_player_name: str | None = None
+    net: float | None = None
+    add_ppg: float | None = None
+    drop_ppg: float | None = None
+    basis_label: str = ""
+    add_games: int | None = None
+    drop_games: int | None = None
+    window_points_gap: float | None = None
+    starting_slots_before: int | None = None
+    starting_slots_after: int | None = None
+    starting_slots_required: int | None = None
+    statement: str = ""
+    primary_reason: str = ""
+    primary_tradeoff: str | None = None
+    blocker: str | None = None
+    consistent: bool = False
+    near_tie: bool = False
+    alternatives: list[DropAlternative] = Field(default_factory=list)
+    drop_choice: str = ""
 
 
 class DecisionOption(BaseModel):
@@ -814,12 +982,22 @@ class DecisionOption(BaseModel):
     roster_measured_count: int = 0
     form: OptionForm | None = None
     move_intent: MoveIntent | None = None
+    verdict: TransactionVerdict = "CANNOT_EVALUATE"
+    verdict_text: str = ""
+    # One-line answer to the transaction question (A: ADD/DROP, B: WATCH, C: DO NOT ADD, D: ADD ONLY / IL move).
+    headline: str = ""
+    pair: OptionPair | None = None
+    current_season_games: int = 0
+    evidence_dimensions: list[EvidenceDimension] = Field(default_factory=list)
 
 
 class OptionGroupPick(BaseModel):
     key: OptionGroupKey
+    # Qualified by the pick's verdict: "BEST SUPPORTED GUARD ADD" only for a supported add, otherwise
+    # "BEST AVAILABLE GUARD TO MONITOR — not a supported add" (or DO NOT ADD / NEAR TIE / cannot evaluate).
     title: str
     player_id: int | None = None
+    verdict: TransactionVerdict | None = None
     empty_reason: str | None = None
 
 

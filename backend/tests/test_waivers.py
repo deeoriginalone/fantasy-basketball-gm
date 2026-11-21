@@ -1328,13 +1328,18 @@ def test_short_term_intent_without_persisted_horizon_games_says_production_led_a
     add.schedule = add.schedule.model_copy(update={"games_remaining": None, "diagnostic_reason": "SCHEDULE_SOURCE_INCOMPLETE"})
     best = analyze(ctx).best_transaction
     assert (best.decision, best.add_player.move_intent) == ("ADD", "STREAM"), "the decision and intent are unchanged"
-    assert best.add_player.move_intent_detail == (f"Short-term move supported in Rest of Week by measured production and "
-        f"roster fit. Games for {add.player_name} in Rest of Week are not established (SCHEDULE_SOURCE_INCOMPLETE), so "
-        "this support rests on measured production and roster fit, not the schedule.")
+    # 2026-11-21 audit (WC-05): the reason comes from the measured contributions; fit did not change, so it is never
+    # claimed, and the static "measured production and roster fit" wording is gone.
+    detail = best.add_player.move_intent_detail
+    assert detail.startswith("Short-term move in Rest of Week. Main reason: Production: ")
+    assert detail.endswith(f"Games for {add.player_name} in Rest of Week are not established (SCHEDULE_SOURCE_INCOMPLETE), "
+        "so the schedule is not part of this support.")
+    assert "roster fit" not in detail.lower()
     ctx.mode = "next_14_days"
     detail = analyze(ctx).best_transaction.add_player.move_intent_detail
-    assert detail == (f"Two-week move supported by current production and roster impact. Games for {add.player_name} "
-        "in Next 14 Days are not established (SCHEDULE_SOURCE_INCOMPLETE), so the schedule is not part of this support.")
+    assert detail.startswith("Two-week move. Main reason: Production: ") and "roster" not in detail.lower()
+    assert detail.endswith(f"Games for {add.player_name} in Next 14 Days are not established (SCHEDULE_SOURCE_INCOMPLETE), "
+        "so the schedule is not part of this support.")
 
 
 def test_next_14_days_intent_names_only_the_evidence_that_supports_the_move():
@@ -1345,16 +1350,19 @@ def test_next_14_days_intent_names_only_the_evidence_that_supports_the_move():
     add.schedule = add.schedule.model_copy(update={"games_remaining": 7, "diagnostic_reason": "SCHEDULE_ROWS_PRESENT"})
     production = analyze(ctx).best_transaction
     assert (production.decision, production.add_player.move_intent) == ("ADD", "TWO_WEEK_STREAM")
-    assert production.add_player.move_intent_detail == (
-        "Two-week move supported by current production, roster impact, and persisted Next 14 Days schedule evidence.")
+    # 2026-11-21 audit (WC-05): only components with a positive measured contribution are named. Here production
+    # carries the move; schedule and fit are unchanged, so neither is claimed.
+    assert production.add_player.move_intent_detail.startswith("Two-week move. Main reason: Production: ")
+    assert not any(word in production.add_player.move_intent_detail.lower() for word in ("schedule", "roster", "role"))
     other = add.model_copy(deep=True, update={"player_id": 3, "player_name": "Schedule add"})
     other.components.player_value, other.components.schedule, add.components.schedule = 80, 100, 1
     ctx.players[3] = other
     ctx.weights = {**WEIGHTS, "player_value": .1, "schedule": .7}
     stream = analyze(ctx).best_transaction
     assert (stream.add_player.player_id, stream.decision, stream.add_player.move_intent) == (3, "STREAM", "TWO_WEEK_STREAM")
-    assert stream.add_player.move_intent_detail == (
-        "Two-week move supported by current production, role, roster impact, and persisted Next 14 Days schedule evidence.")
+    # Role gates a STREAM but its contribution is zero here (equal opportunity), so it is never named as a reason.
+    assert stream.add_player.move_intent_detail.startswith("Two-week move. Main reason: Schedule: 7 games")
+    assert "role" not in stream.add_player.move_intent_detail.lower()
     for text in (production.add_player.move_intent_detail, stream.add_player.move_intent_detail):
         assert not any(word in text.lower() for word in ("two-week schedule", "project", "guarantee", "matchup", "complete"))
 
@@ -2225,6 +2233,11 @@ def test_transactions_endpoint_loads_once_select_only_and_matches_selected_drop(
         assert result["supported_pair_count"] + result["excluded_pair_count"] == result["evaluated_pair_count"]
         watch = result["watch_transactions"][0]
         add_id, drop_id = watch["add_player"]["player_id"], watch["drop_player"]["player_id"]
+        # The exact-pair explanation travels inside the comparison, so the equalities below cover it on every surface.
+        explanation = watch["comparison"]["explanation"]
+        assert explanation["contributions"] and explanation["statement"]
+        assert next(check for check in explanation["checks"] if check["key"] == "ARITHMETIC")["passed"]
+        assert watch["add_player"]["verdict"] == "WATCH_ONLY" and watch["add_player"]["evidence_dimensions"]
         selected = board(persisted, mode="next_7_days", drop_player_id=drop_id)
         pair = next(row for row in selected["candidates"] if row["player_id"] == add_id)
         assert pair["comparison"] == watch["comparison"]
@@ -2853,7 +2866,11 @@ def test_full_roster_keeps_add_drop_primary_and_a_measured_option_must_beat_the_
     assert support.state == "BEST_MEASURED_OPTION" and support.best_measured_ids == [11]
     assert (support.roster_floor_ppg, support.roster_floor_player_id) == (10, 2)
     option = options_by_id(support)[11]
-    assert "Which roster player you would drop" in option.confirm and option.roster_rank_if_added == 1
+    # 2026-11-21 audit (WC-07): a full-roster option names its exact best drop instead of asking the user to guess.
+    assert not any("Which roster player you would drop" in item for item in option.confirm)
+    assert option.roster_rank_if_added == 1
+    assert option.pair is not None and option.pair.drop_player_id == 2 and option.pair.net > 0
+    assert option.verdict == "CANNOT_EVALUATE" and option.headline.startswith("CANNOT EVALUATE — Yahoo status gate:")
     assert analyze_transactions(ctx).best_transaction is None
 
 
@@ -3349,3 +3366,254 @@ def test_cancelled_board_read_stops_its_query_and_returns_the_pooled_connection(
     assert checked_out == 0, "the cancelled read returned its pooled connection"
     assert sleeping == 0, "the cancelled read's query no longer runs on PostgreSQL"
     assert follow_status == 200 and body["model_version"] == MODEL_VERSION
+
+
+# --- 2026-11-21 audit: decision integrity (model waiver-decision-integrity-phase7) -----------------------------------
+# Synthetic, name-neutral fixtures. Real-data trace (read-only): a Rest of Season ADD backed only by a 63-vs-66
+# remaining-games edge (9.8th vs 96.6th percentile) outweighed a 7.7 FP/G production loss; the same mechanism made
+# dropping the roster's best scorer a "supported" move. Nothing here names or protects a player.
+
+def integrity_player(pid, position, *, ppg, games, pct, schedule_pct, rostered=False, l14=None, season_ppg=None,
+        prior=None, weight=None, opportunity=20):
+    from app.features.waivers.contracts import RankingEvidence
+    row = evidence_player(pid, position, value=pct, rostered=rostered)
+    row.components.schedule, row.components.opportunity = schedule_pct, opportunity
+    row.ranking_value = RankingEvidence(value=ppg, recent_weight=weight, historical_value=prior,
+        historical_games=70 if prior is not None else 0, historical_season="2025-26" if prior is not None else None)
+    row.recent = row.recent.model_copy(update={"value": ppg if l14 is None else l14, "season": "2026-27"})
+    row.ros = ValueEvidence(value=ppg if season_ppg is None else season_ppg, games=15, season="2026-27",
+        label="Season Evidence")
+    row.schedule = Schedule(window_start=NOW.date(), window_end=NOW.date() + timedelta(days=6), games_remaining=games,
+        coverage="PARTIAL", diagnostic_reason="SCHEDULE_ROWS_PRESENT")
+    row.overall_score, row.effective_weights = aggregate(row.components, WEIGHTS)
+    return row
+
+
+def integrity_ctx(add, drop_ppg=30, drop_games=2, mode="next_7_days", extra=()):
+    """Full two-slot roster (PG + C): an elite-production center with few games and a guard; `add` is a center."""
+    drop = integrity_player(1, "C", ppg=drop_ppg, games=drop_games, pct=90, schedule_pct=10, rostered=True)
+    keeper = integrity_player(2, "PG", ppg=20, games=3, pct=50, schedule_pct=50, rostered=True)
+    ctx = roster_ctx([drop, keeper], [add, *extra], slots_of(PG=1, C=1), {1: "C", 2: "PG"}, mode=mode)
+    assert ctx.roster_capacity.transaction_shape == "ADD_DROP"
+    return ctx, drop
+
+
+def test_lower_production_add_is_supported_only_with_quantified_window_arithmetic():
+    add = integrity_player(11, "C", ppg=23, games=4, pct=70, schedule_pct=90)
+    ctx, drop = integrity_ctx(add)
+    pair = enrich(ctx, add, drop.player_id)
+    explanation = pair.comparison.explanation
+    assert pair.recommended_action == "STREAM" and pair.verdict == "SUPPORTED_ADD"
+    # Exact arithmetic: weighted contributions reproduce the returned net.
+    contributions = {row.component: row.weighted_contribution for row in explanation.contributions}
+    assert sum(contributions.values()) == pytest.approx(pair.comparison.net_improvement, abs=1e-5)
+    assert contributions["player_value"] == pytest.approx(-10 * .25 / .9, abs=1e-5)
+    assert contributions["schedule"] == pytest.approx(40 * .15 / .9, abs=1e-5)
+    assert explanation.favorable == ["schedule"] and explanation.compensating == ["schedule"] and not explanation.refuted
+    # The compensating schedule claim holds in Yahoo fantasy points: 4 x 23 = 92 vs 2 x 30 = 60.
+    assert (explanation.add_window_points, explanation.drop_window_points, explanation.window_points_gap) == (92, 60, 32)
+    assert explanation.net_without["schedule"] < 0, "the move depends on schedule, and the card says so"
+    assert explanation.statement.startswith(f"Although {add.player_name} scores 7.0 fewer Yahoo FP/G than {drop.player_name}")
+    assert "2 more scheduled games in Next 7 Days (4 vs 2)" in explanation.statement
+    assert "4 x 23.0 = 92.0 vs 2 x 30.0 = 60.0 Yahoo fantasy points (+32.0)" in explanation.statement
+    assert not any(word in explanation.statement.lower() for word in ("role", "opportunity", "roster fit"))
+    assert not explanation.fragile and "acquisition_value" in explanation.omitted
+    # The same arithmetic with less than one add-game of margin is flagged FRAGILE, not hidden.
+    add.ranking_value.value = 16
+    fragile = compare(ctx, add, drop.player_id).explanation
+    assert fragile.consistent and fragile.fragile and fragile.primary_tradeoff.startswith("FRAGILE: the window edge is +4.0")
+
+
+def test_schedule_edge_that_loses_window_points_fails_closed_on_every_surface():
+    from app.features.waivers.service import build_board
+    add = integrity_player(11, "C", ppg=14, games=4, pct=70, schedule_pct=90)
+    ctx, drop = integrity_ctx(add)
+    pair = enrich(ctx, add, drop.player_id)
+    assert pair.comparison.net_improvement > 0, "the index alone still favors the swap"
+    assert pair.recommended_action == "INSUFFICIENT EVIDENCE", "4 x 14 = 56 < 2 x 30 = 60: never a supported move"
+    explanation = pair.comparison.explanation
+    assert explanation.refuted.keys() == {"schedule"} and not explanation.consistent
+    assert explanation.reconciled_net < 0 and explanation.add_window_points == 56 and explanation.drop_window_points == 60
+    assert pair.recommended_action == "INSUFFICIENT EVIDENCE" and pair.verdict == "DO_NOT_ADD"
+    assert pair.verdict_text.startswith(f"DO NOT ADD — ADD {add.player_name} / DROP {drop.player_name} shows +")
+    assert any(note.startswith("Explanation-consistency gate:") for note in pair.evidence_blockers)
+    analysis = analyze_transactions(ctx)
+    assert analysis.best_transaction is None and analysis.decision == "HOLD"
+    assert any(reason.startswith("Explanation-consistency gate:") for reason in analysis.excluded_pair_reasons)
+    assert all(swap.drop_player.player_id != drop.player_id for swap in analysis.watch_transactions)
+    board_view = build_board(ctx, "fixture", "t1", ctx.mode, None)
+    assert board_view.best_add_for_team_id is None
+    assert next(row for row in board_view.roster if row.player_id == drop.player_id).roster_decision == "keep_on_measured_model"
+    selected = build_board(ctx, "fixture", "t1", ctx.mode, drop.player_id)
+    assert next(row for row in selected.candidates if row.player_id == add.player_id).verdict == "DO_NOT_ADD"
+
+
+def test_role_edge_cannot_offset_a_production_loss_and_a_refuted_near_zero_net_is_not_a_tie():
+    add = integrity_player(11, "C", ppg=23, games=2, pct=70, schedule_pct=10, opportunity=90)
+    ctx, drop = integrity_ctx(add)
+    pair = enrich(ctx, add, drop.player_id)
+    assert pair.comparison.net_improvement > 0 and "opportunity" in pair.comparison.explanation.refuted
+    assert pair.verdict == "DO_NOT_ADD" and pair.recommended_action == "INSUFFICIENT EVIDENCE"
+    # A model net near zero only because a refuted schedule edge offsets a real loss is DO NOT ADD, never a near tie.
+    weak = integrity_player(12, "C", ppg=14, games=4, pct=70, schedule_pct=10 + 2 * (10 * .25 / .9) / (.15 / .9) + .006)
+    ctx, drop = integrity_ctx(weak)
+    held = enrich(ctx, weak, drop.player_id)
+    assert abs(held.comparison.net_improvement) < .005 and held.comparison.explanation.reconciled_net < -1
+    assert not held.comparison.explanation.near_tie and held.verdict == "DO_NOT_ADD"
+    # The tiny net keeps its sign and size in the text; it never reads as a "+0.00"/"-0.00" tie.
+    assert f"{held.comparison.net_improvement:+.4f}" in held.verdict_text
+    assert not any(token in held.verdict_text for token in ("+0.00 ", "-0.00 ", "+0.00.", "-0.00.", "+0.00,", "-0.00,"))
+
+
+@pytest.mark.parametrize("delta", [.0005, -.0005])
+def test_a_net_below_the_display_precision_is_a_near_tie_never_a_supported_move(delta):
+    add = integrity_player(11, "C", ppg=30, games=2, pct=90 + 2 * delta / (.25 / .9), schedule_pct=10)
+    ctx, drop = integrity_ctx(add)
+    pair = enrich(ctx, add, drop.player_id)
+    assert abs(pair.comparison.net_improvement) < .005
+    assert pair.comparison.explanation.near_tie and pair.verdict == "NEAR_TIE"
+    assert pair.verdict_text.startswith("NEAR TIE — NO STRONG PREFERENCE")
+    assert pair.recommended_action_type not in {"ADD_DROP", "WATCH"}
+    assert analyze_transactions(ctx).best_transaction is None
+
+
+def test_prior_season_driven_production_edge_is_flagged_with_the_blend_math():
+    add = integrity_player(11, "C", ppg=24.9, games=2, pct=95, schedule_pct=10, l14=16.5, season_ppg=17.7,
+        prior=30.7, weight=7 / 17)
+    ctx, drop = integrity_ctx(add, drop_ppg=19.3)
+    drop.ranking_value.recent_weight, drop.ranking_value.historical_value = .375, 20.7
+    drop.ranking_value.historical_season, drop.recent.value, drop.ros.value = "2025-26", 16.9, 23.6
+    pair = enrich(ctx, add, drop.player_id)
+    explanation = pair.comparison.explanation
+    assert pair.verdict == "SUPPORTED_ADD" and explanation.prior_season_driven
+    assert explanation.add_production.basis == "RECENT_BLENDED"
+    assert explanation.add_production.math == ("0.412 (7/17) x 16.50 last 14 days (7 games) + 0.588 (10/17) x 30.70 "
+        "2025-26 (70 games) = 24.90")
+    assert explanation.primary_tradeoff.startswith("PRIOR-SEASON DRIVEN:")
+    assert "last 14 days 16.5 vs 16.9, this season 17.7 vs 23.6" in explanation.primary_tradeoff
+    assert any(text.startswith("Dropping is permanent:") for text in explanation.tradeoffs)
+
+
+def test_one_game_blend_shows_its_basis_and_weights():
+    from app.features.waivers.explanation import production_basis
+    from app.features.waivers.contracts import RankingEvidence
+    row = evidence_player(11, "PG", games=1)
+    row.recent = row.recent.model_copy(update={"value": 3.2, "games": 1, "season": "2026-27"})
+    row.ranking_value = RankingEvidence(value=1 / 11 * 3.2 + 10 / 11 * 16, recent_weight=1 / 11, historical_value=16,
+        historical_games=44, historical_season="2025-26")
+    basis = production_basis(row, "this_week")
+    assert basis.math == "0.091 (1/11) x 3.20 last 14 days (1 game) + 0.909 (10/11) x 16.00 2025-26 (44 games) = 14.84"
+    assert basis.prior_weight == pytest.approx(10 / 11, abs=1e-4) and basis.label.endswith("mostly previous-season evidence")
+    sample = next(item for item in evidence_dimensions_for(row) if item.key == "PRODUCTION_SAMPLE")
+    assert sample.state == "TOO_SMALL" and sample.text.startswith("1-GAME SAMPLE — WATCH ONLY")
+
+
+def evidence_dimensions_for(row, mode="this_week"):
+    from app.features.waivers.service import evidence_dimensions
+    ctx, _ = integrity_ctx(integrity_player(12, "C", ppg=20, games=2, pct=50, schedule_pct=50), mode=mode)
+    return evidence_dimensions(ctx, row)
+
+
+def test_form_windows_name_the_reason_a_value_is_missing_instead_of_na():
+    from app.features.waivers.decision_support import option_form
+    from app.features.waivers.service import recent_form
+    def windows(logs, **context):
+        form = recent_form(logs, None, None, YAHOO_FIELDS, NOW, NOW.date(), recent_quality=None, season_quality=None,
+            starts=None, season_usage=None, **context)
+        return {window.key: window for window in form.windows}
+    recent_only = windows(form_logs([(20, 10)]))
+    assert recent_only["LAST_30_DAYS"].fantasy_ppg is not None and recent_only["LAST_30_DAYS"].reason is None
+    assert recent_only["LAST_7_DAYS"].reason_label == "No games played in window"
+    assert recent_only["PREVIOUS_SEASON"].reason == "NO_PREVIOUS_SEASON"
+    assert windows([], mapped=False)["LAST_14_DAYS"].reason_label == "Mapping unresolved"
+    assert windows([], logs_current=False)["LAST_7_DAYS"].reason_label == "Data stale"
+    assert windows([], logs_complete=False)["LAST_7_DAYS"].reason_label == "Game logs missing"
+    partial = [PlayerGameLog(nba_player_id="form", game_id="x", season="2026-27", season_type="Regular Season",
+        game_date=NOW.date(), stats_payload={"PTS": 10}, source_payload={}, imported_at=NOW)]
+    assert windows(partial)["LAST_7_DAYS"].reason_label == "Required scoring field missing"
+    row = with_form(evidence_player(11, "PG"), form_logs([(20, 10)]))
+    compact = option_form(row)
+    assert (compact.last_7_ppg, compact.last_7_reason, compact.last_30_reason) == (None, "No games played in window", None)
+
+
+def test_lineup_gap_counts_dates_never_slot_instances():
+    def player(pid, position, dates):
+        row = evidence_player(pid, position, rostered=True)
+        row.schedule = Schedule(window_start=NOW.date(), window_end=NOW.date() + timedelta(days=6), games_remaining=len(dates),
+            coverage="PARTIAL", diagnostic_reason="SCHEDULE_ROWS_PRESENT", game_dates=[NOW.date() + timedelta(days=d) for d in dates])
+        return row
+    # Two C slots; the only centers play on days 0 and 1, so both C slots are open on the other five dates.
+    roster = [player(1, "C", [0, 1]), player(2, "C", [0, 1]), player(3, "PG", range(7))]
+    ctx = roster_ctx(roster, [], slots_of(PG=1, C=2), {1: "C", 2: "C", 3: "PG"})
+    gap = next(need for need in ctx.team_needs.needs if need.slot == "C")
+    assert (gap.kind, gap.count) == ("LINEUP_DAY_GAP", 5), "dates, never more than the 7 window dates"
+    assert gap.slot_games == 10
+    assert gap.reason == ("C has no lineup-eligible player with a persisted game on 5 of 7 dates in this window "
+        "(10 open C slot-games across its 2 slots).")
+    coverage = next(row for row in ctx.team_needs.slot_coverage if row.slot == "C")
+    assert (coverage.open_slot_days, coverage.open_slot_games) == (5, 10)
+    assert all(need.count <= len(ctx.team_needs.lineup_days) for need in ctx.team_needs.needs if need.kind == "LINEUP_DAY_GAP")
+
+
+def test_schedule_rows_after_the_selected_horizon_never_count():
+    today = NOW.date()
+    rows = [SimpleNamespace(game_date=today + timedelta(days=day), game_status="Scheduled", opponent_team_id="B",
+        imported_at=NOW) for day in (0, 3, 6, 7, 13, 20)]
+    schedule = resolve_schedule(rows, today, today + timedelta(days=6), NOW, Counter(), {"B": "BOS"},
+        nba_mapped=True, team_mapped=True)
+    assert schedule.games_remaining == 3 and max(schedule.game_dates) <= today + timedelta(days=6)
+    assert schedule.next_14_days_games == 5
+
+
+def test_full_roster_other_good_options_name_the_exact_drop_and_a_qualified_verdict():
+    supported = integrity_player(11, "C", ppg=33, games=3, pct=95, schedule_pct=60)
+    second = integrity_player(12, "C", ppg=32, games=3, pct=93, schedule_pct=60)
+    watch = integrity_player(13, "PG", ppg=34, games=3, pct=97, schedule_pct=60)
+    watch.current_season_games = watch.recent.games = 3
+    hold = integrity_player(14, "PG", ppg=5, games=3, pct=5, schedule_pct=60)
+    ctx, drop = integrity_ctx(supported, extra=(second, watch, hold))
+    support = support_ctx(ctx)
+    candidates = board_candidates(support)
+    decision = decision_support_for(support, candidates)
+    options = options_by_id(decision)
+    featured = {group.key: group for group in decision.groups if group.player_id is not None}
+    assert featured, "groups feature players"
+    for group in featured.values():
+        option = options[group.player_id]
+        assert option.pair is not None and option.pair.drop_player_id is not None, "a full-roster card names its drop"
+        assert option.verdict == group.verdict and option.headline == option.verdict_text
+        assert not any("Which roster player you would drop" in item for item in option.confirm)
+        if option.verdict == "SUPPORTED_ADD":
+            assert group.title.startswith("BEST SUPPORTED ")
+        else:
+            assert "—" in group.title and not group.title.startswith("BEST SUPPORTED")
+    verdicts = {options[group.player_id].player_id: options[group.player_id].verdict for group in featured.values()}
+    assert verdicts.get(second.player_id) == "SUPPORTED_ADD", "a second supported add is an other good option"
+    assert verdicts.get(watch.player_id) == "WATCH_ONLY"
+    assert options[watch.player_id].headline.startswith("WATCH ONLY — No supported positive add/drop combination was found.")
+    held = enrich(support, hold)
+    assert held.verdict == "DO_NOT_ADD" and held.verdict_text.endswith("Keep your current roster under this model.")
+
+
+def test_roster_drop_labels_follow_the_same_gated_pair_decisions():
+    from app.features.waivers.service import build_board
+    watch = integrity_player(11, "C", ppg=33, games=3, pct=97, schedule_pct=60)
+    watch.current_season_games = watch.recent.games = 3
+    ctx, drop = integrity_ctx(watch)
+    labels = {row.player_id: row.roster_decision for row in build_board(ctx, "fixture", "t1", ctx.mode, None).roster}
+    assert labels[drop.player_id] == "watch_replacement", "positive but sample-blocked is WATCH, never 'unavailable'"
+    watch.current_season_games = watch.recent.games = 7
+    labels = {row.player_id: row.roster_decision for row in build_board(ctx, "fixture", "t1", ctx.mode, None).roster}
+    assert labels[drop.player_id] == "review_replacement"
+    watch.components.player_value = 1
+    labels = {row.player_id: row.roster_decision for row in build_board(ctx, "fixture", "t1", ctx.mode, None).roster}
+    assert labels[drop.player_id] == "keep_on_measured_model"
+
+
+def test_decision_modules_contain_no_player_specific_rules():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "app" / "features" / "waivers"
+    names = ("Allen", "Dunn", "Jackson", "Keldon", "Dončić", "Doncic", "DeRozan", "Huerter")
+    for module in ("service.py", "explanation.py", "decision_support.py", "sample.py", "capacity.py", "contracts.py"):
+        text = (root / module).read_text()
+        assert not any(name in text for name in names), module

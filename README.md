@@ -290,6 +290,41 @@ which still defines a mobile project). Mobile (390 × 844) acceptance is no
 longer required; earlier mobile results in the records remain historical
 evidence, and the mobile tests are kept.
 
+**Phase 7: Decision integrity** (model `waiver-decision-integrity-phase7`;
+implemented and validated locally on 2026-11-21, **NOT deployed**; no
+migration; see the [2026-11-21 session record](docs/sessions/2026-11-21.md))
+makes every recommendation explain itself and refuses those whose
+explanation does not hold:
+
+- **Explanation-consistency gate:** an add that loses measured production is
+  supported only if its compensating edge holds in the league's own scoring
+  unit:
+  - schedule: games × the same-basis FP/G over the window;
+  - fit: requires a starting-slot gain;
+  - role or opportunity: cannot offset a production loss.
+
+  Otherwise it is **DO NOT ADD**, with the arithmetic shown. Weights,
+  thresholds and gates are unchanged.
+- **Every pair shows its math:**
+  - each component's weighted contribution (they sum to the net);
+  - both players' FP/G on the same basis, with blend weights;
+  - games and window points;
+  - "Why this drop?";
+  - tradeoffs: FRAGILE window edge, PRIOR-SEASON DRIVEN, "Dropping is
+    permanent".
+- **Verdicts:** SUPPORTED ADD, WATCH ONLY, NEAR TIE — NO STRONG PREFERENCE
+  (|net| < 0.005), DO NOT ADD, CANNOT EVALUATE. Each has its own style;
+  "best" never implies a supported add.
+- **OTHER GOOD OPTIONS:** on a full roster each card names the best
+  compatible drop (or "No supported drop" with the reason), the exact net and
+  the verdict. Group titles are qualified by the verdict.
+- **Clearer labels:**
+  - evidence by dimension (production sample, current role, schedule, source
+    freshness, transaction verdict);
+  - a reason instead of "n/a";
+  - lineup gaps in dates;
+  - "Watch only" vs "Keep" roster labels.
+
 **Phase 6: Waiver horizons & evidence** (model
 `waiver-horizon-evidence-phase6`; **deployed** 2026-11-14 21:30 UTC and
 verified read-only, application-only with no migration or refresh; rollback

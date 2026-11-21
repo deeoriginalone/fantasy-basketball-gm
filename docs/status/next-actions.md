@@ -51,6 +51,25 @@ limits remain. The Waiver Center is now
 [current-state report](current-state.md) and the
 [2026-11-15 session record](../sessions/2026-11-15.md).
 
+On 2026-11-21 a read-only decision-integrity audit reproduced the user's
+09:37 UTC snapshot exactly and proved a general defect. A schedule advantage
+(a game-count percentile) could outweigh a real production loss even when
+the add trails in the window's Yahoo fantasy points. Rest of Season Outlook
+therefore featured ADD Isaiah Jackson / DROP Jarrett Allen (+1.03): 66 × 22.6
+= 1490.9 vs 63 × 30.3 = 1908.3 points.
+
+The fix, model `waiver-decision-integrity-phase7`, adds:
+
+- an explanation-consistency gate;
+- per-pair explanations;
+- transaction verdicts;
+- exact drops on OTHER GOOD OPTIONS;
+- labeled evidence.
+
+It is **implemented and validated locally but NOT deployed**: the live page
+still serves phase 6. See the [current-state report](current-state.md) and
+the [2026-11-21 session record](../sessions/2026-11-21.md).
+
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
 `PTS + 1.2*REB + 1.5*AST + 3*BLK + 3*STL - TO` from persisted Yahoo settings.
 It uses a continual rolling waiver list, **not FAAB**. The `ros` horizon is
@@ -63,27 +82,46 @@ The Phase-5 deployment, the first refresh, the 2026-11-14 acceptance-fix
 patch, the Phase-6 deployment (2026-11-14 21:30 UTC), the Phase-6 ordering
 and wording cleanup deployment (2026-11-15 02:36 UTC) and the heavy-read
 admission deployment (2026-11-15 14:50 UTC) are complete (see the
-[current-state report](current-state.md)); do not repeat them.
+[current-state report](current-state.md)); do not repeat them. The
+2026-11-21 decision-integrity work (phase 7) is local and uncommitted: it is
+neither committed nor deployed.
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Confirm in Yahoo before acting on a deployed recommendation.** The
-   user's REFRESH WAIVER DATA at 14:29-14:30 UTC saved a new snapshot: roster
-   13/13, IL 3/3, 4 of 4 weekly adds used, priority 4th. Every horizon is now
-   an ADD + DROP pair:
-   - Rest of Week: ADD Bilal Coulibaly / DROP Kris Dunn (+0.163, STREAM).
-   - Next 7 Days: STREAM Coulibaly / DROP Kevin Huerter (+0.625).
-   - Next 14 Days: STREAM Brayden Burries / DROP Huerter (+0.944, TWO-WEEK
-     STREAM).
-   - Rest of Season Outlook: ADD Ja'Kobe Walter / DROP Huerter (+0.128,
-     LONGER-TERM ADD).
+1. **Do not act on the live Rest of Season Outlook pair; confirm everything
+   in Yahoo.** The user's REFRESH WAIVER DATA at 09:37–09:39 UTC on
+   2026-11-21 (job `8828016faf85`) saved the current snapshot: roster 13/13,
+   IL 3/3. The live phase-6 page shows:
+   - Rest of Week: ADD DeMar DeRozan / DROP Kris Dunn (+0.589).
+   - Next 7 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.566).
+   - Next 14 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.567).
+   - Rest of Season Outlook: ADD Isaiah Jackson / DROP Jarrett Allen
+     (+1.026). **Refuted** by the audit: Jackson trails Allen by 417 Yahoo
+     points over the window. Phase 7 features Jackson / Kevin Huerter
+     (+0.412) instead.
 
-   These are hypothetical analysis. Check FA/waiver state, roster locks,
-   current status and whether a weekly add remains in Yahoo; the app never
-   executes a move. The saved Yahoo data goes stale at 2026-11-16 14:29 UTC.
-   Earlier answers (the 11:17 IL-move snapshot and the 2026-11-14
-   Grant/Hyland/Dunn/LaVine pairs) are historical.
-2. **Watch the deployed heavy-read admission.** It has been live since
+   Phase 7 keeps the other three pairs but flags them:
+   - Rest of Week: PRIOR-SEASON DRIVEN and permanent drop.
+   - Next 7 Days: permanent drop of a 30.3 FP/G player for a 7-day stream.
+   - Next 14 Days: FRAGILE (+2.4 points, less than one game).
+
+   These are hypothetical analysis. Check FA/waiver state, locks, status and
+   remaining weekly adds in Yahoo; the app never executes a move. Earlier
+   answers (2026-11-14/15) are historical.
+2. **Decide whether to deploy phase 7** (`waiver-decision-integrity-phase7`;
+   requires explicit authorization; nothing has been committed). It is an API
+   image and frontend rebuild with no migration and no refresh.
+   - Follow the established pattern: commit, a `pg_dump -Fc` backup,
+     rollback tags for both images, `docker compose build api frontend`,
+     recreate `api` and `frontend` only, then GET-only desktop acceptance on
+     the four horizons.
+   - Compare against `qa-work/2026-11-21-waiver-audit/acceptance-after.md`.
+     Expected on an unchanged snapshot:
+     - Rest of Season: Jackson / Huerter +0.412447;
+     - supported positive moves 24 / 39 / 12 / 4.
+   - Responses grow about 22–30% (board about 1.95 MB) because every
+     comparison carries its explanation.
+3. **Watch the deployed heavy-read admission.** It has been live since
    2026-11-15 14:50 UTC (api `bdf329394c93`).
    - A cancelled read logs `status=499` with a `queue` phase in
      `request_timing`.
@@ -91,13 +129,13 @@ may run as a side effect of review or documentation work.
      `fantasy-basketball-gm-api:pre-waiver-reliability` as `latest` and
      recreating only `api`.
    - It bounds abandoned and overlapping reads; it does not fix the host
-     (item 6).
-3. **Validate the Waiver Center on desktop only.** It is PC-only: use
+     (item 7).
+4. **Validate the Waiver Center on desktop only.** It is PC-only: use
    1440 × 1000, one Playwright project (`--project=desktop`) and one worker.
    Do not run mobile/390 px projects for waiver validation. Start the browser,
    let host pressure settle and warm the API with one internal read before
    page tests. Never run heavy reads in parallel.
-4. **Review the tiered-sample observations** (decision only; nothing
+5. **Review the tiered-sample observations** (decision only; nothing
    changes without approval):
    - The 13% FP/G tolerance decides exactly one promotion, Kris Dunn
      (-9.5%), the Next 7 Days drop.
@@ -106,10 +144,27 @@ may run as a side effect of review or documentation work.
    - The tolerance is symmetric (it protects a hot drop and admits a hot
      add).
    - 0-2-game positive pairs still show as WATCH.
-5. **Review history shrinkage** with the user: measured PPG leans on 2025-26
-   (DeRozan 26.5 measured vs 15.8 over his last 4 games). It is documented
-   and labeled; change only by decision.
-6. **Host capacity.** The 7.3 GB shared host swaps under load; waiver reads
+6. **Review history shrinkage and two related method questions** with the
+   user (decisions only; phase 7 discloses them but changes no method):
+   - **Weekly blend** (WC-04): measured PPG leans on 2025-26. On 2026-11-21:
+     - DeRozan 24.89 = 0.412 × 16.54 (last 14 days) + 0.588 × 30.73
+       (2025-26);
+     - Dunn 19.26 = 0.375 × 16.92 + 0.625 × 20.66;
+     - so DeRozan "beats" Dunn while trailing him this season (17.7 vs 23.6
+       FP/G) and over the last 14 days.
+
+     The weekly blend ignores earlier current-season games. Phase 7 labels
+     the case PRIOR-SEASON DRIVEN.
+   - **Short-horizon drop permanence** (WC-18): a Next 7 or Next 14 stream
+     can permanently drop a much higher current-season producer (Jarrett
+     Allen 30.3 vs Keldon Johnson 20.2 FP/G). Phase 7 shows "Dropping is
+     permanent" on the card; whether such a stream should be supported is a
+     policy decision.
+   - **Schedule scale:** the schedule component is the percentile of an
+     integer game count, so 1–3 games can swing it by 40–87 points. The
+     phase-7 gate stops claims that fail in Yahoo points. Rescaling the
+     component is a method decision.
+7. **Host capacity.** The 7.3 GB shared host swaps under load; waiver reads
    then stall for minutes, nginx returns 504 at 60 s, and a new database
    connection can hit asyncpg's 60 s connect timeout (one 500 during the
    2026-11-14 patch acceptance). After an idle period the API itself is
@@ -131,8 +186,8 @@ may run as a side effect of review or documentation work.
      `api` container a no-swap memory limit. Do not raise proxy or connect
      timeouts to hide it. Bounding concurrent heavy waiver reads and stopping
      work for disconnected clients are deployed (2026-11-15 14:50 UTC, item
-     2); they bound the damage, but the host constraint itself remains.
-7. **Later refreshes** are user-initiated from `/waivers` when the panel
+     3); they bound the damage, but the host constraint itself remains.
+8. **Later refreshes** are user-initiated from `/waivers` when the panel
    reports stale sources (Yahoo after 24 hours, NBA after 7 days). Never call
    the individual import routes or refresh as a side effect. An API restart or
    deploy drops the in-memory refresh job record; the panel then reads "All

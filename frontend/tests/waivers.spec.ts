@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-const VERSION = "waiver-horizon-evidence-phase6";
+const VERSION = "waiver-decision-integrity-phase7";
 type Scenario = "add_only" | "move" | "two" | "full" | "hold_watch" | "undetermined" | "stale" | "unavailable";
 
 const evidence = { state: "partial", source: "Persisted NBA", as_of: "2026-10-25T00:00:00Z", detail: "Partial schedule and coverage." };
@@ -35,25 +35,49 @@ const availability = (classification = UNROSTERED) => ({
   },
 });
 const components = { roster_fit: 72, player_value: 70, opportunity: 60, schedule: 80, acquisition_value: null };
+const basis = (value: number) => ({
+  value, basis: "RECENT_BLENDED", label: "Last 14 days blended with 2025-26 (83% previous season): mostly previous-season evidence",
+  percentile: 80, window_value: value - 2, window_games: 2, window_weight: .1667, prior_value: value + .4, prior_games: 60,
+  prior_season: "2025-26", prior_weight: .8333, current_season_value: value - 2, current_season_games: 2,
+  math: `0.167 (2/12) x ${(value - 2).toFixed(2)} last 14 days (2 games) + 0.833 (10/12) x ${(value + .4).toFixed(2)} 2025-26 (60 games) = ${value.toFixed(2)}`,
+});
+// The backend explanation for one exact comparison; its single contribution reproduces the fixture net.
+const explanation = (dropId: number | null, dropName: string | null, net: number, type = "ADD_DROP") => ({
+  horizon: "Rest of Week", window_start: "2026-10-25", window_end: "2026-10-31", comparison_type: type,
+  add_player_id: 1, add_name: "Available Center", drop_player_id: dropId, drop_name: dropName,
+  add_production: basis(32), drop_production: dropId === null ? null : basis(24), production_gap: dropId === null ? null : 8,
+  add_games: 2, drop_games: dropId === null ? null : 2, add_window_points: 64, drop_window_points: dropId === null ? null : 48,
+  window_points_gap: dropId === null ? null : 16, starting_slots_before: 3, starting_slots_after: 3, starting_slots_required: 2,
+  contributions: [{ component: "roster_fit", before: 72, after: 72 + net, delta: net, effective_weight: 1, weighted_contribution: net }],
+  contribution_sum: net, net, favorable: net > 0 ? ["roster_fit"] : [], unfavorable: net < 0 ? ["roster_fit"] : [],
+  omitted: { acquisition_value: "acquisition value is unavailable (current rolling priority and transaction evidence are unverified); it never affects ranking." },
+  compensating: [], refuted: {}, net_without: {}, reconciled_net: net, near_tie: false, fragile: false, prior_season_driven: false,
+  checks: [{ key: "ARITHMETIC", passed: true, detail: `Weighted contributions sum to ${net}; returned net ${net}.` }], consistent: true,
+  statement: net > 0 ? `Roster fit: matched starting slots 3 to 3 of 2, +${net.toFixed(2)} index points. Net modeled change: +${net.toFixed(2)}.`
+    : `No improvement: keeping ${dropName} is preferable under this model (net ${net.toFixed(2)} index points).`,
+  primary_reason: net > 0 ? `Roster fit: +${net.toFixed(2)} index points` : "No component improves the roster index.",
+  tradeoffs: [], primary_tradeoff: null, blocker: null,
+});
 const drop = (id: number, net = 15) => ({
   player_id: id, player_name: id === 2 ? "Weak Guard" : "Bench Forward", before_score: 66, after_score: 66 + net,
   net_improvement: net, component_before: components, component_after: { ...components, roster_fit: 72 + net },
   effective_weights: { roster_fit: .4 }, starting_slots_before: 3, starting_slots_after: 3,
   starting_slots_required: 2, component_deltas: { ...components, roster_fit: net }, reasons: ["Same measured model on both sides."],
-  comparison_type: "ADD_DROP", target_roster_position: "C",
+  comparison_type: "ADD_DROP", target_roster_position: "C", explanation: explanation(id, id === 2 ? "Weak Guard" : "Bench Forward", net),
 });
 const noDrop = (type = "ADD_ONLY", moved: string | null = null) => ({
   ...drop(2, 12), player_id: null, player_name: moved ? `No drop (move ${moved} to IL)` : "No drop (open roster slot)",
   comparison_type: type, moved_to_injury_slot_player_id: moved ? 9 : null, moved_to_injury_slot_player_name: moved,
   target_roster_position: "C", roster_spots_basis: 13, open_roster_spots_before: 1, open_roster_spots_after: 0,
   reasons: ["No-drop comparison over the same 13 non-injury roster spots: nobody is removed."],
+  explanation: { ...explanation(null, null, 12, type), statement: "Production: Available Center 32.0 Yahoo FP/G (last 14 days blended with the previous season), +12.00 index points. Net modeled change: +12.00." },
 });
 const formWindow = (key: string, label: string, games: number, ppg: number | null, tweaks: Record<string, unknown> = {}) => ({
   key, label, games, fantasy_ppg: ppg, minutes_average: games ? 28.4 : null, minutes_median: games ? 29 : null,
   starts: null, starts_detail: "Per-game starts are not persisted.", usage: null, usage_detail: "Game-level usage is not persisted.",
   sample_tier: games >= 7 ? "SUPPORTED" : games >= 5 ? "LIMITED" : "VERY_LOW", sample_label: `${games} games`,
   window_start: "2026-10-31", window_end: "2026-11-13", latest_game: "2026-11-13", season: null,
-  as_of: "2026-11-14T08:31:50Z", state: "available", detail: "Persisted NBA game logs.", ...tweaks,
+  as_of: "2026-11-14T08:31:50Z", state: "available", detail: "Persisted NBA game logs.", reason: null, reason_label: "", ...tweaks,
 });
 const SAMPLE_DETAIL = "6 games in the last 14 days (LIMITED SAMPLE), corroborated: 12 games in the last 30 days; 12 games this season; role STABLE (available)";
 const formEvidence = {
@@ -62,7 +86,8 @@ const formEvidence = {
       formWindow("LAST_7_DAYS", "Last 7 Days", 3, 33.1), formWindow("LAST_14_DAYS", "Last 14 Days", 6, 31.2),
       formWindow("LAST_30_DAYS", "Last 30 Days", 12, 27.9),
       formWindow("CURRENT_SEASON", "Current Season", 12, 27.9, { season: "2026-27", starts: 9, usage: .231, window_start: null, window_end: null }),
-      formWindow("PREVIOUS_SEASON", "Previous Season", 0, null, { season: "2025-26", state: "unavailable", window_start: null, window_end: null }),
+      formWindow("PREVIOUS_SEASON", "Previous Season", 0, null, { season: "2025-26", state: "unavailable", window_start: null, window_end: null,
+        reason: "NO_PREVIOUS_SEASON", reason_label: "No previous-season stats" }),
     ],
     trend: { trend: "IMPROVING", recent_games: 6, baseline_games: 6, recent_ppg: 31.2, baseline_ppg: 24.6, ppg_change: .268,
       recent_minutes: 30.1, baseline_minutes: 26.4, minutes_change: 3.7, detail: "Last 14 Days vs days 15-30: PPG +26.8%, minutes +3.7.",
@@ -72,7 +97,20 @@ const formEvidence = {
   sample: { mode: "this_week", window: "LAST_14_DAYS", relevant_games: 6, current_season_games: 12, tier: "LIMITED", passes: true,
     corroborated: true, required: [], corroborations: [], corroborations_passed: 3, detail: SAMPLE_DETAIL },
 };
-const player = (id: number, name: string, comparison: Record<string, unknown> | null, tweaks: Record<string, unknown> = {}) => ({
+// Backend verdict semantics: every supported action type is SUPPORTED ADD; WATCH is WATCH ONLY; HOLD is DO NOT ADD.
+const VERDICT_OF: Record<string, string> = { ADD_ONLY: "SUPPORTED_ADD", MOVE_TO_IL_THEN_ADD: "SUPPORTED_ADD", ADD_DROP: "SUPPORTED_ADD",
+  WATCH: "WATCH_ONLY", HOLD: "DO_NOT_ADD" };
+const VERDICT_WORDS: Record<string, string> = { SUPPORTED_ADD: "SUPPORTED ADD", WATCH_ONLY: "WATCH ONLY", NEAR_TIE: "NEAR TIE — NO STRONG PREFERENCE",
+  DO_NOT_ADD: "DO NOT ADD", CANNOT_EVALUATE: "CANNOT EVALUATE" };
+const withVerdict = <T extends { player_name: string; verdict?: unknown; verdict_text?: unknown }>(row: T, action: string) => {
+  const verdict = (row.verdict as string | undefined) ?? VERDICT_OF[action] ?? "CANNOT_EVALUATE";
+  return { ...row, verdict, verdict_text: (row.verdict_text as string | undefined) ?? `${VERDICT_WORDS[verdict]} — ${row.player_name}.` };
+};
+const player = (id: number, name: string, comparison: Record<string, unknown> | null, tweaks: Record<string, unknown> = {}) => {
+  const row = playerRow(id, name, comparison, tweaks);
+  return withVerdict(row, row.recommended_action_type as string);
+};
+const playerRow = (id: number, name: string, comparison: Record<string, unknown> | null, tweaks: Record<string, unknown> = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, position: id === 3 ? "G" : "C", nba_team: "DEN",
   yahoo_status: id === 3 ? null : id === 1 ? "Q" : "P", availability: "free_agent", eligible: true,
   recent: { value: 52, games: 2, season: "2026-27",
@@ -190,7 +228,12 @@ const measured = (value: number | null) => ({
   as_of: evidence.as_of, sample_label: "INSUFFICIENT FOR STRONG RECOMMENDATION",
   detail: value === null ? "No current-season NBA games in persisted evidence." : `${value.toFixed(1)} measured Yahoo fantasy PPG. Imported 2026-10-25 (stale). Historical, not a projection.`,
 });
-const option = (id: number, name: string, tweaks: Record<string, unknown> = {}) => ({
+const option = (id: number, name: string, tweaks: Record<string, unknown> = {}) => {
+  const row = optionRow(id, name, tweaks);
+  const verdict = withVerdict(row, row.action_type as string);
+  return { ...verdict, headline: (tweaks.headline as string | undefined) ?? verdict.verdict_text };
+};
+const optionRow = (id: number, name: string, tweaks: Record<string, unknown> = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, positions: "PG,SG", nba_team: "BOS", decision_rank: 1, classification: "MEASURED",
   action_type: "INSUFFICIENT_EVIDENCE", availability: "unrostered", availability_confirmed: true, availability_label: AVAILABILITY_LABELS[UNROSTERED],
   ...availability(),
@@ -200,7 +243,7 @@ const option = (id: number, name: string, tweaks: Record<string, unknown> = {}) 
   why: [`${(40 - id).toFixed(1)} measured Yahoo fantasy PPG from 3 current-season games, blended with 2025-26.`],
   blockers: ["Yahoo status is UNKNOWN (blank); blank is not treated as healthy.", "Current-season sample is 3 games; supported adds need at least 7."],
   confirm: ["Current Yahoo status", "Current role and minutes (small current-season sample)"], user_action: "CHECK IN YAHOO",
-  roster_rank_if_added: 9, roster_measured_count: 14, ...tweaks,
+  roster_rank_if_added: 9, roster_measured_count: 14, current_season_games: 3, ...tweaks,
 });
 // Not on any saved roster, but the saved rosters are stale: a potential target only, never featured.
 const unverified = (classification = "SOURCE_STALE") => ({
@@ -209,10 +252,19 @@ const unverified = (classification = "SOURCE_STALE") => ({
   blockers: ["Yahoo availability is unverified: league rosters are from 2026-10-25 or incomplete."],
   confirm: ["Yahoo availability (free agent or waivers)", "Current Yahoo status"],
 });
-const groups = (picks: Record<string, number | null>) => [
-  ["BEST_GUARD", "BEST GUARD"], ["BEST_WING_FORWARD", "BEST WING / FORWARD"], ["BEST_CENTER", "BEST CENTER"],
-  ["BEST_MULTI_POSITION", "BEST MULTI-POSITION OPTION"], ["BEST_SHORT_TERM", "BEST SHORT-TERM SCHEDULE"], ["BEST_LONGER_TERM", "BEST LONGER-TERM OPTION"],
-].map(([key, title]) => ({ key, title, player_id: picks[key] ?? null, empty_reason: picks[key] ? null : `No measurable ${title.toLowerCase()}.` }));
+// Backend group titles: an empty group is "BEST AVAILABLE {noun}"; a pick's title is qualified by its verdict.
+const GROUP_NOUNS = [["BEST_GUARD", "GUARD"], ["BEST_WING_FORWARD", "WING / FORWARD"], ["BEST_CENTER", "CENTER"],
+  ["BEST_MULTI_POSITION", "MULTI-POSITION OPTION"], ["BEST_SHORT_TERM", "SHORT-TERM SCHEDULE OPTION"], ["BEST_LONGER_TERM", "LONGER-TERM OPTION"]];
+const groupTitle = (noun: string, verdict: string) => verdict === "SUPPORTED_ADD" ? `BEST SUPPORTED ${noun} ADD`
+  : verdict === "WATCH_ONLY" ? `BEST AVAILABLE ${noun} TO MONITOR — not a supported add`
+    : verdict === "NEAR_TIE" ? `BEST AVAILABLE ${noun} — near tie, no strong preference`
+      : verdict === "DO_NOT_ADD" ? `BEST AVAILABLE ${noun} — do not add: no supported positive swap` : `BEST AVAILABLE ${noun} — cannot evaluate yet`;
+const groups = (picks: Record<string, number | null>, verdicts: Record<number, string> = {}) => GROUP_NOUNS.map(([key, noun]) => {
+  const id = picks[key] ?? null;
+  const verdict = id === null ? null : verdicts[id] ?? "CANNOT_EVALUATE";
+  return { key, title: verdict ? groupTitle(noun, verdict) : `BEST AVAILABLE ${noun}`, player_id: id, verdict,
+    empty_reason: id ? null : `No measurable ${noun.toLowerCase()}.` };
+});
 const decisionSupport = (current: Scenario) => {
   const base = {
     detail: "The strict evidence gates block a supported move, but persisted basketball evidence can still compare players.",
@@ -618,9 +670,11 @@ test("ADD ONLY is the focal move, the page follows the decision hierarchy, and d
   await expect(dialog).toContainText("ADD ONLY comparison (no drop)");
   await expect(dialog).toContainText("no player is dropped");
   await expect(card.locator(".waiver-intent")).toHaveText("STREAM");
-  await expect(card).toContainText("Form (Yahoo FP/G): L7 33.1 (3 g) · L14 31.2 (6 g) · L30 27.9 (12 g) · Season 27.9 (12 g) · IMPROVING");
+  await expect(card).toContainText("Recent form (Yahoo FP/G, look-back): Last 7: 33.1 (3 g) · Last 14: 31.2 (6 g) · Last 30: 27.9 (12 g) · Season: 27.9 (12 g) · Trend: IMPROVING");
+  await expect(card.locator(".waiver-verdict")).toHaveText("SUPPORTED ADD");
   const decision = dialog.getByRole("region", { name: "Roster decision for Available Center" });
-  await expect(decision).toContainText("WHY: STREAM: 2 games in Rest of Week cover the open C slot.");
+  await expect(decision).toContainText("WHY: Production: Available Center 32.0 Yahoo FP/G (last 14 days blended with the previous season), +12.00 index points. Net modeled change: +12.00.");
+  await expect(decision).toContainText("VERDICTSUPPORTED ADD");
   const formPanel = dialog.getByRole("region", { name: "Form and schedule evidence for Available Center" });
   for (const text of ["RECENT FORM", "LAST 14 DAYS", "6 games · 31.2 Yahoo FP/G · 28.4 MIN", "FORM: IMPROVING", "SEASON EVIDENCE",
     "9 starts · 23.1% usage", "UPCOMING SCHEDULE", "NEXT 14", "58 persisted games", `Recent-sample gate: ${SAMPLE_DETAIL}.`]) {
@@ -746,9 +800,9 @@ test("explicit drop: a supported replacement ranks before a higher-net WATCH, th
   const cards = compare.locator(".waiver-replacement-card");
   await expect(cards).toHaveCount(2);
   await expect(cards.nth(0).locator("h4")).toHaveText("Overall Guard");
-  await expect(cards.nth(0).locator(".waiver-decision")).toHaveText("ADD");
+  await expect(cards.nth(0).locator(".waiver-verdict")).toHaveText("SUPPORTED ADD");
   await expect(cards.nth(1).locator("h4")).toHaveText("Available Center");
-  await expect(cards.nth(1).locator(".waiver-decision")).toHaveText("WATCH");
+  await expect(cards.nth(1).locator(".waiver-verdict")).toHaveText("WATCH ONLY");
   for (const card of await cards.all()) await expect(card).toContainText("Selected dropBench Forward");
   await expect(compare).toContainText("Each comparison uses only the selected drop: Bench Forward.");
   await expect(compare).toContainText("Ordered by the backend: supported moves first, then WATCH, HOLD and insufficient evidence");
@@ -790,13 +844,18 @@ test("full roster promotes the exact ADD + DROP pair and read errors never becom
   boardPair = [1, 4];
   await page.route("**/api/v1/waivers/transactions?**", (route) => route.fulfill({ json: {
     ...transactions(), decision: "ADD", recommended_action_type: "ADD_DROP",
-    action_label: "ADD Available Center + DROP Bench Forward: Your roster is full.", best_transaction: { ...swap(), decision: "ADD" },
+    action_label: "ADD Available Center + DROP Bench Forward: Your roster is full.",
+    // The backend attaches the pair-specific add row to a supported transaction (decision ADD, verdict SUPPORTED ADD).
+    best_transaction: { ...swap(), decision: "ADD", add_player: { ...swap().add_player, verdict: "SUPPORTED_ADD", recommended_action: "ADD",
+      recommended_action_type: "ADD_DROP", evidence_blockers: [] } },
   } }));
   await page.goto("/waivers");
   const best = section(page, "BEST MOVES RIGHT NOW");
   await expect(best.getByRole("heading", { name: "ADD: Available Center", exact: true })).toBeVisible();
   await expect(best).toContainText("DROP: Bench Forward");
-  await best.locator("details").filter({ hasText: "Risks, exact model values and role evidence" }).locator("summary").first().click();
+  await expect(best.locator(".waiver-verdict")).toHaveText("SUPPORTED ADD");
+  await best.locator("details").filter({ hasText: "Exact calculation, risks and role evidence" }).locator("summary").first().click();
+  await expect(best.locator(".waiver-contrib-table")).toContainText("roster fit");
   await expect(best).toContainText("Add Yahoo status: Q · drop status: NO CURRENT YAHOO DESIGNATION. Q/P remains uncertain.");
   await expect(best).toContainText(NO_DESIGNATION_DETAIL);
   await expect(best).not.toContainText(/HEALTHY|\bhealthy\b|CLEARED|NO INJURY/);
@@ -847,13 +906,15 @@ test("WATCH stays separate from a HOLD with open capacity", async ({ page }) => 
   await expect(best.locator(".waiver-move-card")).toHaveCount(0);
   const options = section(page, "OTHER GOOD OPTIONS");
   await expect(options.getByRole("heading", { name: "WATCHLIST" })).toBeVisible();
-  for (const title of ["BEST GUARD", "BEST WING / FORWARD", "BEST CENTER", "BEST MULTI-POSITION OPTION", "BEST SHORT-TERM SCHEDULE", "BEST LONGER-TERM OPTION"]) {
+  // Titles are the backend's, qualified by each pick's verdict: "best" never implies a supported add.
+  for (const title of ["BEST AVAILABLE GUARD — cannot evaluate yet", "BEST AVAILABLE WING / FORWARD — cannot evaluate yet", "BEST AVAILABLE CENTER",
+    "BEST AVAILABLE MULTI-POSITION OPTION", "BEST AVAILABLE SHORT-TERM SCHEDULE OPTION", "BEST AVAILABLE LONGER-TERM OPTION"]) {
     await expect(options.getByRole("heading", { name: title, exact: true })).toBeVisible();
   }
   const watch = options.locator(".waiver-option-list");
   await expect(watch).toContainText("Available Center");
   await expect(watch).toContainText("Positive measured impact, but the sample is too small");
-  await expect(watch.locator(".waiver-action")).toHaveText("WATCH");
+  await expect(watch.locator(".waiver-verdict")).toHaveText("WATCH ONLY");
   await watch.getByRole("button", { name: "View details: Available Center" }).click();
   const dialog = page.getByRole("dialog", { name: "Player impact analysis" });
   await expect(dialog.getByRole("button", { name: "Close analysis" })).toBeFocused();
@@ -1155,8 +1216,8 @@ test("with stale league rosters nobody is featured: unverified players are a sep
   await expect(page.locator("main")).not.toContainText("Rostered Elsewhere Guard");
   await page.locator("details.waiver-full-list > summary").click();
   const list = section(page, "FULL WAIVER LIST");
-  await expect(list).toContainText("Show all 2 players (0 confirmed available · 2 availability unverified)");
-  await expect(list.locator("tbody .waiver-action").first()).toHaveText("POTENTIAL TARGET");
+  await expect(list).toContainText("Show all 2 players (0 unrostered in every current league roster · 2 availability unverified)");
+  await expect(list.locator("tbody tr").first()).toContainText("List group: POTENTIAL TARGET");
   await expect(list).not.toContainText("Rostered Elsewhere Guard");
   await expectAccessible(page);
   await expectNoBlockingOverflow(page);
@@ -1170,5 +1231,69 @@ test("a featured move missing from the eligible-candidate map shows a contract e
   await expect(best).toContainText("A recommendation for Available Center was withheld because the player is not in the current waiver-eligible candidate set.");
   await expect(best.locator(".waiver-move-card")).toHaveCount(0);
   await expect(best.getByRole("heading", { name: "HOLD", exact: true })).toHaveCount(0);
+  await expectAccessible(page);
+});
+
+test("full-roster OTHER GOOD OPTIONS give every pick a verdict and its exact drop, and fit the desktop page", async ({ page }) => {
+  // 2026-11-21 audit (WC-07/WC-08/WC-12): full-roster options named no drop, and "best" read as a recommendation.
+  scenario = "full";
+  const refuted = "Explanation gate: schedule: 4 x 20.0 = 80.0 vs 3 x 30.0 = 90.0 window Yahoo fantasy points; the extra game does not offset the lower production.";
+  const pair = (dropId: number, dropName: string, net: number, tweaks: Record<string, unknown> = {}) => ({
+    comparison_type: "ADD_DROP", drop_player_id: dropId, drop_player_name: dropName, net, add_ppg: 20, drop_ppg: 18,
+    basis_label: "Last 14 days blended with 2025-26 (83% previous season): mostly previous-season evidence",
+    add_games: 3, drop_games: 2, window_points_gap: 24, starting_slots_before: 3, starting_slots_after: 3, starting_slots_required: 2,
+    statement: "", primary_reason: "Production: 20.0 vs 18.0 Yahoo FP/G, +0.41 index points", primary_tradeoff: null, blocker: null,
+    consistent: true, near_tie: false, alternatives: [], drop_choice: "", ...tweaks,
+  });
+  const support = { ...decisionSupport("full"), state: "WATCH", supported_count: 0,
+    headline: "No supported move; each option below carries its own verdict.",
+    groups: groups({ BEST_GUARD: 3, BEST_WING_FORWARD: 5, BEST_CENTER: 1 }, { 1: "WATCH_ONLY", 3: "DO_NOT_ADD", 5: "CANNOT_EVALUATE" }),
+    options: [
+      option(1, "Available Center", { positions: "C", classification: "WATCH", action_type: "WATCH", current_season_games: 2,
+        pair: pair(4, "Bench Forward", .41, { blocker: "Sample gate: Available Center 2 games in the last 14 days.",
+          alternatives: [{ player_id: 2, player_name: "Weak Guard", net: .2, margin: .21, consistent: true, near_tie: false, note: "" }],
+          drop_choice: "Bench Forward gives the highest measured net (+0.41); next best drop Weak Guard +0.20 (+0.21 behind)." }) }),
+      option(3, "Overall Guard", { verdict: "DO_NOT_ADD", headline: "DO NOT ADD — Overall Guard / drop Weak Guard shows +1.03 index points, but its schedule edge does not hold.",
+        pair: pair(2, "Weak Guard", 1.03, { add_ppg: 20, drop_ppg: 30, add_games: 4, drop_games: 3, window_points_gap: -10, consistent: false,
+          blocker: refuted, primary_reason: "No component improves the roster index." }) }),
+      option(5, "Measured Wing", { positions: "SF,PF", blockers: ["Current-season sample is 3 games; supported adds need at least 7."] }),
+    ] };
+  await page.route((url) => url.pathname === "/api/v1/waivers", async (route) => {
+    const mode = new URL(route.request().url()).searchParams.get("mode") ?? "this_week";
+    await route.fulfill({ json: { ...board(mode), decision_support: support } });
+  });
+  await page.goto("/waivers");
+  const options = section(page, "OTHER GOOD OPTIONS");
+  const card = (title: string) => options.locator(".waiver-option-card").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
+  const center = card("BEST AVAILABLE CENTER TO MONITOR — not a supported add");
+  await expect(center.locator(".waiver-verdict")).toHaveText("WATCH ONLY");
+  await expect(center).toContainText("Best compatible drop (comparison only)Bench Forward");
+  await expect(center).toContainText("Net (exact pair)+0.41 index points");
+  await expect(center).toContainText("Yahoo FP/G (same basis)Add 20.0 · drop 18.0");
+  await expect(center).toContainText("Primary blocker: Sample gate: Available Center 2 games in the last 14 days.");
+  await expect(center).toContainText("2-GAME SAMPLE — WATCH ONLY");
+  await center.locator("details.waiver-why-drop > summary").click();
+  await expect(center.locator("details.waiver-why-drop")).toContainText("Weak Guard: +0.20 index points (0.21 behind)");
+  const guard = card("BEST AVAILABLE GUARD — do not add: no supported positive swap");
+  await expect(guard.locator(".waiver-verdict")).toHaveText("DO NOT ADD");
+  await expect(guard).toContainText("Best compatible drop (comparison only)Weak Guard");
+  await expect(guard).toContainText(`Primary blocker: ${refuted}`);
+  const wing = card("BEST AVAILABLE WING / FORWARD — cannot evaluate yet");
+  await expect(wing.locator(".waiver-verdict")).toHaveText("CANNOT EVALUATE");
+  await expect(wing).toContainText("No supported drop: Current-season sample is 3 games; supported adds need at least 7.");
+  await expect(options).not.toContainText("Which roster player you would drop");
+  const badge = (locator: ReturnType<typeof page.locator>) => locator.locator(".waiver-verdict").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return `${style.backgroundColor} ${style.borderTopStyle}`;
+  });
+  const styles = [await badge(center), await badge(guard), await badge(wing)];
+  expect(new Set(styles).size).toBe(3);
+  for (const style of styles) expect(style).not.toContain("rgb(31, 107, 79)");
+  await options.locator("details").filter({ hasText: "Measured index and blockers" }).locator("summary").first().click();
+  await expect(options.locator(".waiver-contrib-table").first()).toContainText("Sum = net");
+  for (const item of await options.locator(".waiver-option-card").all()) {
+    expect(await item.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await expectNoBlockingOverflow(page);
   await expectAccessible(page);
 });

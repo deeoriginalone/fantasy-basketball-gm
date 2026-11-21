@@ -9,17 +9,23 @@ import type {
   DecisionOption,
   DecisionSupport,
   DecisionSupportClass,
+  DropAlternative,
+  EvidenceDimension,
   FillRecommendation,
   FormWindow,
   FreshnessItem,
+  MeasuredProduction,
   MoveIntent,
   OptionForm,
+  OptionPair,
+  PairExplanation,
   QualityState,
   RecentForm,
   RosterCapacity,
   SwapAnalysis,
   TeamNeed,
   TransactionAnalysis,
+  TransactionVerdict,
   WaiverActionType,
   WaiverBoard,
   WaiverCandidate,
@@ -28,9 +34,10 @@ import type {
   WaiverImpact,
   WaiverMode,
   WaiverRefreshStatus,
+  WaiverSampleLabel,
 } from "./waiverTypes";
 
-const CURRENT_WAIVER_MODEL_VERSION = "waiver-horizon-evidence-phase6";
+const CURRENT_WAIVER_MODEL_VERSION = "waiver-decision-integrity-phase7";
 // Only these Yahoo availability classes may back a supported move or a featured recommendation.
 const ACTIONABLE_AVAILABILITY = new Set<AvailabilityClass>([
   "CONFIRMED_FA", "CONFIRMED_WAIVER", "UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT",
@@ -208,9 +215,9 @@ function sampleClass(sample: string): string {
 function sampleRisk(candidate: WaiverCandidate): string[] {
   return [
     ...(candidate.recent.games < 7
-      ? [`Recent evidence: ${candidate.recent.sample_label.toLowerCase()}.`] : []),
+      ? [`Last 14 days sample: ${candidate.recent.games} game${candidate.recent.games === 1 ? "" : "s"} (${SAMPLE_BAND_TEXT[candidate.recent.sample_label]}).`] : []),
     ...(candidate.ros.games < 7
-      ? [`Historical evidence: ${candidate.ros.sample_label.toLowerCase()}.`] : []),
+      ? [`Season Evidence sample: ${candidate.ros.games} game${candidate.ros.games === 1 ? "" : "s"} (${SAMPLE_BAND_TEXT[candidate.ros.sample_label]}).`] : []),
     ...(noDesignation(candidate) && candidate.status_detail ? [`${candidate.status_label}: ${candidate.status_detail}`]
       : !candidate.yahoo_status ? ["Yahoo status is unknown."] : []),
     ...Object.entries(candidate.data_quality)
@@ -223,10 +230,10 @@ function sampleRisk(candidate: WaiverCandidate): string[] {
 function CandidateSamples({ candidate }: { candidate: WaiverCandidate }) {
   const windows: [string, WaiverCandidate["recent"]][] = [["Recent", candidate.recent], ["Season Evidence", candidate.ros]];
   return <div className="waiver-samples">
-    <p><strong>Current-season evidence: {candidate.evidence_quality}</strong> · {candidate.current_season_games} games. Evidence quality is not probability.</p>
-    <div><strong>Recent {number(candidate.recent.value)} fantasy PPG</strong><span className={sampleClass(candidate.recent.sample_label)}>{candidate.recent.sample_label}</span>
-      <small>{candidate.recent.games} games · {candidate.recent.season ?? "season unavailable"}</small></div>
-    <div><strong>Season Evidence {number(candidate.ros.value)} fantasy PPG</strong><span className={sampleClass(candidate.ros.sample_label)}>{candidate.ros.sample_label}</span>
+    <p><strong>{seasonSampleText(candidate.evidence_quality, candidate.current_season_games)}</strong>. A game-count band, not probability.</p>
+    <div><strong>Last 14 days {number(candidate.recent.value)} fantasy PPG</strong><span className={sampleClass(candidate.recent.sample_label)}>{SAMPLE_BAND_TEXT[candidate.recent.sample_label]}</span>
+      <small>{candidate.recent.games} games · {candidate.recent.season ?? "season unavailable"} · raw window, before any blending</small></div>
+    <div><strong>Season Evidence {number(candidate.ros.value)} fantasy PPG</strong><span className={sampleClass(candidate.ros.sample_label)}>{SAMPLE_BAND_TEXT[candidate.ros.sample_label]}</span>
       <small>{candidate.ros.games} games · {candidate.ros.season ?? "no historical season"} · historical, not a projection</small></div>
     <details><summary>Exact Fantasy PPG inputs and contributions</summary>
       {windows.map(([title, value]) =>
@@ -373,7 +380,73 @@ function CandidateAvailability({ candidate }: { candidate: WaiverCandidate }) {
 }
 
 function signed(value: number | null | undefined): string {
-  return value == null ? "Unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+  return value == null ? "Unavailable" : netDigits(value);
+}
+
+// Roster-index nets are shown with two decimals on every surface; the backend calls any |net| below half of that
+// unit (0.005) a NEAR TIE, so a displayed preference is never just rounding. A non-zero net that would print as
+// 0.00 keeps four decimals so its sign and size stay visible.
+function netDigits(value: number): string {
+  return `${value > 0 ? "+" : ""}${value.toFixed(value !== 0 && Math.abs(value) < .005 ? 4 : 2)}`;
+}
+
+function indexNet(value: number | null | undefined): string {
+  return value == null ? "Unavailable" : `${netDigits(value)} index points`;
+}
+
+const VERDICT_TEXT: Record<TransactionVerdict, string> = {
+  SUPPORTED_ADD: "SUPPORTED ADD", WATCH_ONLY: "WATCH ONLY", NEAR_TIE: "NEAR TIE — NO STRONG PREFERENCE",
+  DO_NOT_ADD: "DO NOT ADD", CANNOT_EVALUATE: "CANNOT EVALUATE",
+};
+
+/** The backend verdict; WATCH, DO NOT ADD and NEAR TIE never share the supported-add styling. */
+function VerdictBadge({ verdict }: { verdict: TransactionVerdict | null | undefined }) {
+  const value = verdict ?? "CANNOT_EVALUATE";
+  return <span className={`waiver-verdict is-${value.toLowerCase()}`}>{VERDICT_TEXT[value]}</span>;
+}
+
+/** Every evidence label with its dimension, so labels from different systems are never shown unlabeled together. */
+function EvidenceDimensions({ dimensions }: { dimensions: EvidenceDimension[] | null | undefined }) {
+  if (!dimensions?.length) return null;
+  return <dl className="waiver-dimensions" aria-label="Evidence by dimension">{dimensions.map((item) =>
+    <div key={item.key} className={`is-${item.state.toLowerCase()}`}><dt>{item.label}</dt><dd>{item.text}</dd></div>)}</dl>;
+}
+
+// Season-game bands (current-season game counts); never the bare "INSUFFICIENT FOR STRONG RECOMMENDATION".
+const SAMPLE_BAND_TEXT: Record<WaiverSampleLabel, string> = {
+  EXCELLENT: "20+ games", GOOD: "10–19 games", LIMITED: "7–9 games",
+  "VERY LIMITED": "4–6 games: below the 7-game requirement",
+  "INSUFFICIENT FOR STRONG RECOMMENDATION": "1–3 games: below the 7-game requirement",
+  "NO CURRENT-SEASON EVIDENCE": "no current-season games",
+};
+
+function seasonSampleText(label: WaiverSampleLabel, games?: number | null): string {
+  if (games == null) return `Current-season sample: ${SAMPLE_BAND_TEXT[label]}`;
+  return `Current-season sample: ${games} game${games === 1 ? "" : "s"}${games < 7 ? " (below the 7-game requirement)" : ""}`;
+}
+
+/** "1-GAME SAMPLE — WATCH ONLY" (or 2-game) is shown prominently; such a sample never supports a move. */
+function tinySample(games: number | null | undefined): string | null {
+  return games === 1 || games === 2 ? `${games}-GAME SAMPLE — WATCH ONLY` : null;
+}
+
+function measuredBasisLabel(measured: MeasuredProduction): string {
+  if (measured.value == null) return "Unavailable";
+  const blended = measured.prior_value != null && measured.current_weight != null && measured.current_weight < 1;
+  return blended ? "Blended with previous season" : measured.basis === "RECENT" ? "Recent only" : "Current season only";
+}
+
+/** The exact measured-value math, e.g. 1 game at 3.2 weighted 1/11 plus a 2025-26 baseline weighted 10/11. */
+function measuredMath(measured: MeasuredProduction): string {
+  if (measured.value == null) return measured.detail || "Production unavailable.";
+  const games = measured.current_games;
+  const window = measured.basis === "RECENT" ? "last-14-days" : "current-season";
+  const current = measured.current_value == null ? "?" : measured.current_value.toFixed(1);
+  if (measured.prior_value != null && measured.current_weight != null && measured.current_weight < 1) {
+    const share = Math.round((1 - measured.current_weight) * 100);
+    return `${games} ${window} game${games === 1 ? "" : "s"} at ${current} FP/G (weight ${games}/${games + 10}) + ${measured.prior_season ?? "previous-season"} baseline ${measured.prior_value.toFixed(1)} FP/G (weight 10/${games + 10}) = ${measured.value.toFixed(1)} FP/G${share > 50 ? `: ${share}% previous-season evidence, not current form` : ""}.`;
+  }
+  return `${measured.value.toFixed(1)} FP/G from ${games} ${window} game${games === 1 ? "" : "s"}; no blending.`;
 }
 
 // Decision horizons look forward; form windows (Last 7 / 14 / 30 Days) look back. They are never interchangeable.
@@ -395,32 +468,157 @@ function IntentBadge({ intent }: { intent: MoveIntent | null | undefined }) {
   return <>{" "}<span className={`waiver-intent is-${intent.toLowerCase()}`}>{INTENT_TEXT[intent]}</span></>;
 }
 
-function ppgText(value: number | null | undefined): string {
-  return value == null ? "n/a" : value.toFixed(1);
+function ppgText(value: number | null | undefined, reason?: string | null): string {
+  return value == null ? (reason || "Unavailable") : `${value.toFixed(1)}${reason ? ` (${reason})` : ""}`;
 }
 
 const FORM_SHORT: [FormWindow["key"], string][] = [
-  ["LAST_7_DAYS", "L7"], ["LAST_14_DAYS", "L14"], ["LAST_30_DAYS", "L30"], ["CURRENT_SEASON", "Season"],
+  ["LAST_7_DAYS", "Last 7"], ["LAST_14_DAYS", "Last 14"], ["LAST_30_DAYS", "Last 30"], ["CURRENT_SEASON", "Season"],
 ];
 
-/** One backend form line for a card; the full panel lives in VIEW DETAILS so cards stay recommendation-first. */
+function trendText(trend: RecentForm["trend"]["trend"]): string {
+  return trend === "INSUFFICIENT EVIDENCE" ? "Trend: not enough games (3+ on each side of the 14-day split)" : `Trend: ${trend}`;
+}
+
+/** One backend form line (look-back windows, never a forecast); a missing value shows its backend reason. */
 function FormLine({ form, name }: { form: RecentForm | null | undefined; name?: string }) {
   if (!form) return null;
   const windows = new Map(form.windows.map((window) => [window.key, window]));
   const parts = FORM_SHORT.map(([key, short]) => {
     const window = windows.get(key);
-    return window ? `${short} ${ppgText(window.fantasy_ppg)} (${window.games} g)` : null;
+    return window ? `${short}: ${ppgText(window.fantasy_ppg, window.reason_label)} (${window.games} g)` : null;
   }).filter((part): part is string => part !== null);
-  return <p className="waiver-form-line"><strong>{name ? `${name} form` : "Form"} (Yahoo FP/G):</strong> {parts.join(" · ")} · {form.trend.trend}</p>;
+  return <p className="waiver-form-line"><strong>{name ? `${name} recent form` : "Recent form"} (Yahoo FP/G, look-back):</strong> {parts.join(" · ")} · {trendText(form.trend.trend)}</p>;
 }
 
 function OptionFormLine({ form }: { form: OptionForm | null | undefined }) {
   if (!form) return null;
-  return <p className="waiver-form-line"><strong>Form (Yahoo FP/G):</strong> L7 {ppgText(form.last_7_ppg)} ({form.last_7_games} g) · L14 {ppgText(form.last_14_ppg)} ({form.last_14_games} g) · L30 {ppgText(form.last_30_ppg)} ({form.last_30_games} g) · Season {ppgText(form.season_ppg)} ({form.season_games} g) · {form.trend}</p>;
+  return <p className="waiver-form-line"><strong>Recent form (Yahoo FP/G, look-back):</strong> Last 7: {ppgText(form.last_7_ppg, form.last_7_reason)} ({form.last_7_games} g) · Last 14: {ppgText(form.last_14_ppg, form.last_14_reason)} ({form.last_14_games} g) · Last 30: {ppgText(form.last_30_ppg, form.last_30_reason)} ({form.last_30_games} g) · {trendText(form.trend)}</p>;
+}
+
+/** "24.1 Yahoo FP/G · 12 games", or the backend reason when the value is missing (never "n/a"). */
+function seasonFacts(value: number | null | undefined, reason: string | null | undefined, games: number): string {
+  const count = `${games} game${games === 1 ? "" : "s"}`;
+  return value == null ? `${reason || "Unavailable"} · ${count}` : `${ppgText(value, reason)} Yahoo FP/G · ${count}`;
+}
+
+/** RECENT FORM, CURRENT-SEASON PRODUCTION, PREVIOUS-SEASON BASELINE and the MODEL VALUE USED, kept apart. */
+function ProductionBlock({ option }: { option: DecisionOption }) {
+  const form = option.form;
+  const pair = option.pair;
+  return <dl className="waiver-production" aria-label={`Production evidence for ${option.player_name}`}>
+    <div><dt>RECENT FORM</dt><dd>{form ? <OptionFormLine form={form} /> : "Form windows were not returned"}</dd></div>
+    <div><dt>CURRENT-SEASON PRODUCTION</dt><dd>{form ? seasonFacts(form.season_ppg, form.season_reason, form.season_games) : "Form windows were not returned"}</dd></div>
+    <div><dt>PREVIOUS-SEASON BASELINE</dt><dd>{form ? seasonFacts(form.previous_season_ppg, form.previous_season_reason, form.previous_season_games) : "Form windows were not returned"}</dd></div>
+    <div><dt>MODEL VALUE USED</dt><dd>{pair?.add_ppg != null
+      ? <>{pair.add_ppg.toFixed(1)} Yahoo FP/G in the exact comparison <small>{pair.basis_label}</small></>
+      : <>{measuredBasisLabel(option.measured)}: {measuredMath(option.measured)}</>}</dd></div>
+    {pair?.add_ppg != null && <div><dt>MEASURED FOR RANKING</dt><dd>{measuredBasisLabel(option.measured)}: {measuredMath(option.measured)}</dd></div>}
+  </dl>;
+}
+
+/** Exact component arithmetic: weighted contribution = effective weight x (after - before); the sum is the net. */
+function ContributionTable({ explanation }: { explanation: PairExplanation }) {
+  return <div className="waiver-table-scroll" role="region" aria-label="Exact roster-index arithmetic, scroll horizontally for all columns" tabIndex={0}>
+    <table className="waiver-contrib-table">
+      <caption>Roster index: weighted contribution = effective weight × (after − before). Components outside the common mask are listed below, never filled.</caption>
+      <thead><tr>{["Component", "Before", "After", "Delta", "Effective weight", "Weighted contribution"].map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
+      <tbody>
+        {explanation.contributions.map((row) => <tr key={row.component} className={row.weighted_contribution > 0 ? "is-gain" : row.weighted_contribution < 0 ? "is-cost" : ""}>
+          <th scope="row">{label(row.component)}</th><td>{row.before.toFixed(4)}</td><td>{row.after.toFixed(4)}</td>
+          <td>{row.delta > 0 ? "+" : ""}{row.delta.toFixed(4)}</td><td>{(row.effective_weight * 100).toFixed(2)}%</td>
+          <td>{row.weighted_contribution > 0 ? "+" : ""}{row.weighted_contribution.toFixed(6)}</td>
+        </tr>)}
+        <tr><th scope="row">Sum = net</th><td colSpan={4}>Returned net {explanation.net == null ? "unavailable" : `${explanation.net > 0 ? "+" : ""}${explanation.net.toFixed(6)}`}</td>
+          <td>{explanation.contribution_sum == null ? "Unavailable" : `${explanation.contribution_sum > 0 ? "+" : ""}${explanation.contribution_sum.toFixed(6)}`}</td></tr>
+      </tbody>
+    </table>
+  </div>;
+}
+
+/** The full backend explanation: statement, arithmetic, provenance, window points, checks and sensitivity. */
+function ExplanationDetails({ explanation }: { explanation: PairExplanation }) {
+  const omitted = Object.entries(explanation.omitted);
+  const without = Object.entries(explanation.net_without);
+  return <div className="waiver-explanation">
+    <ContributionTable explanation={explanation} />
+    <h5>Production values used (same basis for both players)</h5>
+    <ul>
+      <li><strong>{explanation.add_name}:</strong> {explanation.add_production.value == null ? "Unavailable" : `${explanation.add_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.add_production.label}{explanation.add_production.math ? ` · ${explanation.add_production.math}` : ""}{explanation.add_production.percentile != null ? ` · production percentile ${explanation.add_production.percentile.toFixed(1)}` : ""}</li>
+      {explanation.drop_production && <li><strong>{explanation.drop_name}:</strong> {explanation.drop_production.value == null ? "Unavailable" : `${explanation.drop_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.drop_production.label}{explanation.drop_production.math ? ` · ${explanation.drop_production.math}` : ""}{explanation.drop_production.percentile != null ? ` · production percentile ${explanation.drop_production.percentile.toFixed(1)}` : ""}</li>}
+    </ul>
+    <p><strong>Schedule in {explanation.horizon}</strong> ({explanation.window_start ?? "?"} to {explanation.window_end ?? "?"}, persisted schedule rows):{" "}
+      {explanation.add_name} {explanation.add_games ?? "unknown"} games{explanation.drop_name ? ` · ${explanation.drop_name} ${explanation.drop_games ?? "unknown"} games` : ""}.
+      {explanation.window_points_gap != null && ` Window Yahoo fantasy points (games × FP/G, before daily lineup limits): ${explanation.add_window_points?.toFixed(1)} vs ${explanation.drop_window_points?.toFixed(1)} (${explanation.window_points_gap > 0 ? "+" : ""}${explanation.window_points_gap.toFixed(1)}).`}</p>
+    <p><strong>Starting slots:</strong> {explanation.starting_slots_before ?? "?"} → {explanation.starting_slots_after ?? "?"} of {explanation.starting_slots_required ?? "?"}{explanation.starting_slots_after != null && explanation.starting_slots_before != null && explanation.starting_slots_after > explanation.starting_slots_before ? " (fills a starting slot)" : " (no fit change)"}.</p>
+    {without.length > 0 && <p><strong>Would it still win without…</strong> {without.map(([key, value]) => `${label(key)}: ${value == null ? "unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(4)}`}`).join(" · ")}.</p>}
+    {omitted.length > 0 && <><h5>Not in this comparison</h5><ul>{omitted.map(([key, reason]) => <li key={key}>{label(key)}: {reason}</li>)}</ul></>}
+    <h5>Consistency checks</h5>
+    <ul className="waiver-checks">{explanation.checks.map((check) => <li key={check.key} className={check.passed ? "is-passed" : "is-failed"}>
+      <strong>{check.passed ? "PASS" : "FAIL"} · {label(check.key)}:</strong> {check.detail}</li>)}</ul>
+    {explanation.tradeoffs.length > 0 && <><h5>Tradeoffs</h5><ul>{explanation.tradeoffs.map((item) => <li key={item}>{item}</li>)}</ul></>}
+  </div>;
+}
+
+/** Every backend tradeoff for a featured move (drop permanence, fragile window edge, prior-season reliance, costs). */
+function Tradeoffs({ explanation }: { explanation: PairExplanation | null }) {
+  if (!explanation?.tradeoffs.length) return null;
+  return <div className="waiver-tradeoff"><strong>{explanation.tradeoffs.length === 1 ? "Tradeoff" : "Tradeoffs"}:</strong>
+    <ul>{explanation.tradeoffs.map((item) => <li key={item}>{item}</li>)}</ul></div>;
+}
+
+/** "Why this drop?": the chosen drop against the next measured drops for the same add. */
+function WhyThisDrop({ choice, alternatives }: { choice: string | null | undefined; alternatives: DropAlternative[] | null | undefined }) {
+  if (!choice && !alternatives?.length) return null;
+  return <details className="waiver-why-drop"><summary>Why this drop?</summary>
+    {choice && <p>{choice}</p>}
+    {alternatives?.length ? <ul>{alternatives.map((row) => <li key={row.player_id}>{row.player_name}: {indexNet(row.net)}
+      {row.margin != null ? ` (${row.margin >= 0 ? `${row.margin.toFixed(2)} behind` : `${Math.abs(row.margin).toFixed(2)} ahead on the index`})` : ""}{row.note ? ` — not used: ${row.note}` : ""}</li>)}</ul> : null}
+  </details>;
+}
+
+/** The exact pair behind an option card: who to drop (or no drop), the net and why, on one basis. */
+function PairFacts({ option, mode, onDetails }: { option: DecisionOption; mode: WaiverMode; onDetails: (option: DecisionOption) => void }) {
+  const pair = option.pair as OptionPair;
+  const drop = pair.drop_player_name ?? (pair.comparison_type === "MOVE_TO_IL_THEN_ADD" ? "No drop: conditional IL move"
+    : pair.comparison_type === "ADD_ONLY" ? "No drop: open roster spot" : "No supported drop");
+  const slotsChanged = pair.starting_slots_after != null && pair.starting_slots_before != null && pair.starting_slots_after > pair.starting_slots_before;
+  const blocker = pair.blocker ?? (option.verdict === "SUPPORTED_ADD" ? null : option.blockers[0] ?? null);
+  return <>
+    <dl className="waiver-move-facts waiver-pair-facts">
+      <div><dt>{pair.drop_player_name ? `Best compatible drop${option.verdict === "SUPPORTED_ADD" ? "" : " (comparison only)"}` : "Drop"}</dt><dd>{drop}</dd></div>
+      <div><dt>Net (exact pair)</dt><dd>{indexNet(pair.net)}</dd></div>
+      <div><dt>Yahoo FP/G (same basis)</dt><dd>Add {pair.add_ppg?.toFixed(1) ?? "?"}{pair.drop_player_name ? ` · drop ${pair.drop_ppg?.toFixed(1) ?? "?"}` : ""}<small>{pair.basis_label}</small></dd></div>
+      <div><dt>Games in {modeWindow(mode)}</dt><dd>{pair.add_games ?? "Unknown"}{pair.drop_player_name ? ` vs ${pair.drop_games ?? "unknown"}` : ""}{pair.window_points_gap != null ? ` · window FP ${pair.window_points_gap > 0 ? "+" : ""}${pair.window_points_gap.toFixed(1)}` : ""}</dd></div>
+      <div><dt>Need / fit change</dt><dd>Starting slots {pair.starting_slots_before ?? "?"} → {pair.starting_slots_after ?? "?"} of {pair.starting_slots_required ?? "?"}{slotsChanged ? " (fills a slot)" : " (no fit change)"}</dd></div>
+      <div><dt>Primary reason</dt><dd>{pair.primary_reason || "No component improves the roster index."}</dd></div>
+    </dl>
+    <p className={`waiver-tradeoff${blocker ? " is-blocker" : ""}`}><strong>{blocker ? "Primary blocker" : "Primary tradeoff"}:</strong> {blocker ?? pair.primary_tradeoff ?? "None reported by the backend."}</p>
+    <WhyThisDrop choice={pair.drop_choice} alternatives={pair.alternatives} />
+    {pair.drop_player_name && <button className="button button-quiet" onClick={() => onDetails(option)}>Compare other drops: {option.player_name}</button>}
+  </>;
+}
+
+/** An option card that always answers the transaction question with the backend verdict and exact pair. */
+function OptionCard({ option, mode, fullRoster, onDetails }: { option: DecisionOption; mode: WaiverMode; fullRoster: boolean; onDetails: (option: DecisionOption) => void }) {
+  const verdict = option.verdict ?? "CANNOT_EVALUATE";
+  const sample = tinySample(option.current_season_games);
+  return <div className={`waiver-option is-${verdict.toLowerCase()}`}>
+    <p className="waiver-option-head"><strong className="waiver-option-name">{option.player_name}</strong> <span>{positionText(option.positions)}</span> <VerdictBadge verdict={verdict} /> <AvailabilityBadge option={option} /></p>
+    <p className="waiver-option-headline">{option.headline || option.verdict_text || option.reason}</p>
+    {option.reason && option.reason !== option.headline && <p className="waiver-option-reason"><strong>Why listed:</strong> {option.reason}</p>}
+    {sample && <p className="waiver-sample-alert">{sample}</p>}
+    {option.pair ? <PairFacts option={option} mode={mode} onDetails={onDetails} />
+      : <p className="waiver-tradeoff is-blocker"><strong>{fullRoster ? "No supported drop:" : "No comparison:"}</strong> {option.blockers[0] ?? "no measured comparison is available for this player."}</p>}
+    <ProductionBlock option={option} />
+    <EvidenceDimensions dimensions={option.evidence_dimensions} />
+    <button className="button button-quiet" onClick={() => onDetails(option)}>View details: {option.player_name}</button>
+  </div>;
 }
 
 function windowFacts(window: FormWindow): string {
-  return [`${window.games} game${window.games === 1 ? "" : "s"}`, `${ppgText(window.fantasy_ppg)} Yahoo FP/G`,
+  return [`${window.games} game${window.games === 1 ? "" : "s"}`,
+    window.fantasy_ppg == null ? (window.reason_label || "Yahoo FP/G unavailable") : `${ppgText(window.fantasy_ppg, window.reason_label)} Yahoo FP/G`,
     window.minutes_average != null ? `${window.minutes_average.toFixed(1)} MIN` : null,
     window.minutes_median != null ? `median ${window.minutes_median.toFixed(1)}` : null,
     window.starts != null ? `${window.starts} starts` : null,
@@ -526,7 +724,7 @@ function NeedsDetails({ board }: { board: WaiverBoard }) {
       ? `${needs.starting_slots_covered ?? "Unknown"} of ${needs.starting_slots_required} starting slots can be covered by ${needs.lineup_player_count} lineup-eligible players.`
       : "Starting slots are unavailable: no valid persisted Yahoo roster positions."} {modeWindow(needs.mode)}: {needs.window_start} to {needs.window_end} Pacific.</p>
     {positional.length > 0 && <><h3>Open slots and schedule gaps</h3><ol className="waiver-need-list">{positional.map((need) =>
-      <li key={`${need.kind}-${need.slot}`}><strong>{need.slot}</strong> · {NEED_KIND_TEXT[need.kind]}{need.count > 1 ? ` ×${need.count}` : ""}: {need.reason}
+      <li key={`${need.kind}-${need.slot}`}><strong>{need.slot}</strong> · {NEED_KIND_TEXT[need.kind]}{need.kind !== "LINEUP_DAY_GAP" && need.count > 1 ? ` ×${need.count}` : ""}: {need.reason}
         {need.compatible_candidate_ids.some((id) => eligible.has(id)) && <> Options: {need.compatible_candidate_ids.filter((id) => eligible.has(id)).map(nameOf).join(", ")}.</>}</li>)}</ol></>}
     <h3>Schedule gaps by date</h3>
     {needs.lineup_day_state === "partial" && <div className="waiver-table-scroll" role="region" aria-label="Lineup coverage by date, scroll horizontally for all columns" tabIndex={0}>
@@ -542,11 +740,11 @@ function NeedsDetails({ board }: { board: WaiverBoard }) {
     <h3>Position coverage</h3>
     <div className="waiver-table-scroll" role="region" aria-label="Position coverage, scroll horizontally for all columns" tabIndex={0}>
       <table className="waiver-slot-table"><caption>How many starting slots each slot type needs and how many lineup-eligible players can fill them. Eligibility is not player quality.</caption>
-        <thead><tr>{["Slot", "Required", "Covered", "Uncovered", "Open slot-days", "Eligible players"].map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
+        <thead><tr>{["Slot", "Required", "Covered", "Uncovered", "Open dates (slot-games)", "Eligible players"].map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
         <tbody>{needs.slot_coverage.map((row) => <tr key={row.slot}>
           <th scope="row">{row.slot}{row.weakened_by_injury ? " (injury)" : ""}</th><td>{row.required}</td>
           <td>{row.covered ?? "Unknown"}</td><td>{row.uncovered ?? "Unknown"}</td>
-          <td>{row.open_slot_days ?? "Unavailable"}</td>
+          <td>{row.open_slot_days == null ? "Unavailable" : `${row.open_slot_days}${row.open_slot_games != null && row.open_slot_games !== row.open_slot_days ? ` (${row.open_slot_games})` : ""}`}</td>
           <td>{row.eligible_player_ids.map(nameOf).join(", ") || "None"}</td>
         </tr>)}</tbody>
       </table>
@@ -646,14 +844,14 @@ function MoveCard({ fill, mode, kicker, onAnalyze }: {
   onAnalyze: (fill: FillRecommendation) => void;
 }) {
   const player = fill.add_player;
-  const value = mode === "ros" ? player.ros : player.recent;
   const move = fill.suggested_injury_move;
   const target = fill.target_roster_position;
+  const explanation = fill.comparison?.explanation ?? null;
   const warnings = (player.evidence_blockers ?? []).length ? player.evidence_blockers ?? [] : sampleRisk(player).slice(0, 3);
   return <article className="waiver-move-card is-supported">
     <header>
       <p className="waiver-kicker">{kicker}</p>
-      <ActionBadge action={fill.action_type} /><IntentBadge intent={player.move_intent} />
+      <div className="waiver-badges"><ActionBadge action={fill.action_type} /><IntentBadge intent={player.move_intent} /> <VerdictBadge verdict={player.verdict} /></div>
       <h3 className="waiver-move-player">{player.player_name}</h3>
       <p className="waiver-move-meta">{positionText(player.position)} · {player.nba_team ?? "NBA team unknown"}</p>
       <CandidateAvailability candidate={player} />
@@ -664,19 +862,24 @@ function MoveCard({ fill, mode, kicker, onAnalyze }: {
     </ol>}
     <dl className="waiver-move-facts">
       <div><dt>Fills</dt><dd>{fill.fills_needs.length ? fill.fills_needs.join(" / ") : target && target !== "BN" ? target : "Depth (bench)"}</dd></div>
-      <div><dt>Yahoo fantasy PPG</dt><dd>{number(value.value)} · {value.games} games</dd></div>
-      <div><dt>Evidence</dt><dd>{player.evidence_quality}</dd></div>
+      <div><dt>Yahoo FP/G used</dt><dd>{explanation?.add_production.value != null ? explanation.add_production.value.toFixed(1) : "Unavailable"}<small>{explanation?.add_production.label ?? ""}</small></dd></div>
+      <div><dt>Production sample</dt><dd>{seasonSampleText(player.evidence_quality, player.current_season_games)}</dd></div>
       <div><dt>Drop</dt><dd>{fill.requires_drop ? "Drop required" : "No drop required"}</dd></div>
+      <div><dt>Games in {modeWindow(mode)}</dt><dd>{explanation?.add_games ?? player.schedule.games_remaining ?? "Unknown"}</dd></div>
+      <div><dt>Net</dt><dd>{indexNet(fill.comparison?.net_improvement)}</dd></div>
     </dl>
     <FormLine form={player.form} />
     <h4>Why</h4>
-    <ul>{player.move_intent_detail && <li>{player.move_intent_detail}</li>}{fill.reasons.slice(1, 4).map((reason) => <li key={reason}>{reason}</li>)}</ul>
-    <details><summary>Evidence warnings ({warnings.length})</summary>
+    <ul>{explanation && <li>{explanation.statement}</li>}{player.move_intent_detail && <li>{player.move_intent_detail}</li>}{fill.reasons.slice(1, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul>
+    <Tradeoffs explanation={explanation} />
+    <details><summary>Exact calculation and evidence warnings ({warnings.length})</summary>
+      {explanation && <ExplanationDetails explanation={explanation} />}
       {warnings.length
         ? <ul>{warnings.map((item) => <li key={item}>{item}</li>)}</ul>
         : <p>No additional evidence warnings. Live status, roster locks and claim timing still need Yahoo confirmation.</p>}
       <p>Roster index (no drop): {number(fill.comparison?.before_score)} → {number(fill.comparison?.after_score)} ({signed(fill.comparison?.net_improvement)}); a descriptive model index, not fantasy points.</p>
     </details>
+    <EvidenceDimensions dimensions={player.evidence_dimensions} />
     <p className="waiver-user-action">CONFIRM IN YAHOO BEFORE ACTING</p>
     <button className="button button-primary" onClick={() => onAnalyze(fill)}>View details: {player.player_name}</button>
   </article>;
@@ -690,19 +893,23 @@ function PairCard({ swap, mode, capacity, onAnalyze }: {
 }) {
   const add = swap.add_player;
   const drop = swap.drop_player;
-  const value = (row: WaiverCandidate) => (mode === "ros" ? row.ros : row.recent).value;
+  const explanation = swap.comparison.explanation ?? null;
+  const addValue = explanation?.add_production.value;
+  const dropValue = explanation?.drop_production?.value;
+  const slots = swap.comparison;
   return <article className="waiver-move-card is-supported">
     <header>
       <p className="waiver-kicker">Best move now</p>
-      <ActionBadge action="ADD_DROP" /><IntentBadge intent={add.move_intent} />
+      <div className="waiver-badges"><ActionBadge action="ADD_DROP" /><IntentBadge intent={add.move_intent} /> <VerdictBadge verdict={add.verdict} /></div>
       <h3 className="waiver-move-player">ADD: {add.player_name}</h3>
       <p className="waiver-move-drop">DROP: <strong>{drop.player_name}</strong> · Decision: {swap.decision}</p>
       <CandidateAvailability candidate={add} />
     </header>
     <dl className="waiver-move-facts">
-      <div><dt>Fills</dt><dd>{swap.comparison.target_roster_position ?? "Same starting slots"}</dd></div>
-      <div><dt>Yahoo fantasy PPG</dt><dd>Add {number(value(add))} · drop {number(value(drop))}</dd></div>
-      <div><dt>Evidence</dt><dd>Add {add.evidence_quality} · drop {drop.evidence_quality}</dd></div>
+      <div><dt>Net (exact pair)</dt><dd>{indexNet(swap.comparison.net_improvement)}</dd></div>
+      <div><dt>Yahoo FP/G used (same basis)</dt><dd>Add {addValue != null ? addValue.toFixed(1) : number(null)} · drop {dropValue != null ? dropValue.toFixed(1) : number(null)}<small>{explanation?.add_production.label ?? "Production basis unavailable"}</small></dd></div>
+      <div><dt>Games in {modeWindow(mode)}</dt><dd>{explanation ? `${explanation.add_games ?? "unknown"} vs ${explanation.drop_games ?? "unknown"}` : "Unknown"}{explanation?.window_points_gap != null ? ` · window FP ${explanation.window_points_gap > 0 ? "+" : ""}${explanation.window_points_gap.toFixed(1)}` : ""}</dd></div>
+      <div><dt>Starting slots</dt><dd>{slots.starting_slots_before ?? "?"} → {slots.starting_slots_after ?? "?"} of {slots.starting_slots_required ?? "?"}{slots.starting_slots_after != null && slots.starting_slots_before != null && slots.starting_slots_after > slots.starting_slots_before ? " (fills a slot)" : " (no fit change)"}</dd></div>
       <div><dt>Drop</dt><dd>Required: your roster is full</dd></div>
     </dl>
     <FormLine form={add.form} name="Add" />
@@ -710,43 +917,47 @@ function PairCard({ swap, mode, capacity, onAnalyze }: {
     <h4>Why</h4>
     <ul>
       {add.move_intent_detail && <li>{add.move_intent_detail}</li>}
-      <li>Positive supported Yahoo-points roster-model change; not a predicted fantasy-point gain.</li>
-      <li>Starting-slot coverage: {swap.comparison.starting_slots_before} → {swap.comparison.starting_slots_after} of {swap.comparison.starting_slots_required} slots.</li>
-      {swap.decision === "STREAM" && <li>Measured schedule and opportunity support this short-term move: {add.schedule.games_remaining} persisted games; {add.opportunity.role}.</li>}
+      <li>{explanation?.statement ?? "The backend returned no explanation for this pair; do not act on it."}</li>
       {capacity && <li>Why a drop is required: {capacity.drop_requirement_reason}</li>}
     </ul>
-    <details><summary>Risks, exact model values and role evidence</summary>
+    <Tradeoffs explanation={explanation} />
+    <WhyThisDrop choice={add.drop_choice} alternatives={add.drop_alternatives} />
+    <details><summary>Exact calculation, risks and role evidence</summary>
+      {explanation && <ExplanationDetails explanation={explanation} />}
       <p>Add Yahoo status: {yahooStatusText(add)} · drop status: {yahooStatusText(drop)}. Q/P remains uncertain.</p>
       {[add, drop].some(noDesignation) && <p>{[add, drop].find(noDesignation)?.status_detail}</p>}
-      <p>Exact roster model index: {exact(swap.comparison.before_score)} → {exact(swap.comparison.after_score)} (+{exact(swap.comparison.net_improvement)}); descriptive, not projected fantasy points.</p>
+      <p>Exact roster model index: {exact(swap.comparison.before_score)} → {exact(swap.comparison.after_score)} ({swap.comparison.net_improvement != null && swap.comparison.net_improvement > 0 ? "+" : ""}{exact(swap.comparison.net_improvement)}); descriptive, not projected fantasy points.</p>
       <ul>{swap.limitations.map((risk) => <li key={risk}>{risk}</li>)}</ul>
       <RoleEvidence candidate={add} />
     </details>
+    <EvidenceDimensions dimensions={add.evidence_dimensions} />
     <p className="waiver-user-action">CONFIRM IN YAHOO BEFORE ACTING</p>
     <button className="button button-primary" onClick={() => onAnalyze(swap)}>View details: ADD {add.player_name} / DROP {drop.player_name}</button>
   </article>;
 }
 
-function MeasuredCard({ option, mode, kicker, onDetails }: {
+function MeasuredCard({ option, mode, kicker, fullRoster, onDetails }: {
   option: DecisionOption;
   mode: WaiverMode;
   kicker: string;
+  fullRoster: boolean;
   onDetails: (option: DecisionOption) => void;
 }) {
-  return <article className="waiver-move-card is-measured">
+  return <article className={`waiver-move-card is-measured is-${(option.verdict ?? "CANNOT_EVALUATE").toLowerCase()}`}>
     <header>
       <p className="waiver-kicker">{kicker}</p>
-      <span className="waiver-action is-best_measured_option">BEST MEASURED OPTION</span>
+      <div className="waiver-badges"><span className="waiver-action is-best_measured_option">BEST MEASURED OPTION</span> <VerdictBadge verdict={option.verdict} /></div>
       <h3 className="waiver-move-player">{option.player_name}</h3>
       <p className="waiver-move-meta">{positionText(option.positions)} · {option.nba_team ?? "NBA team unknown"} · <AvailabilityBadge option={option} /></p>
     </header>
+    <p className="waiver-option-headline">{option.headline || option.verdict_text}</p>
+    {option.pair && <PairFacts option={option} mode={mode} onDetails={onDetails} />}
+    {!option.pair && fullRoster && <p className="waiver-tradeoff is-blocker"><strong>No supported drop:</strong> {option.blockers[0] ?? "no measured comparison is available."}</p>}
     <dl className="waiver-move-facts">
-      <div><dt>Best measurable fit for</dt><dd>{fillsText(option)}</dd></div>
-      <div><dt>Measured</dt><dd>{measuredPpg(option)}</dd></div>
+      <div><dt>Position-eligible for</dt><dd>{fillsText(option)}</dd></div>
       <div><dt>Schedule</dt><dd>{gamesText(option, mode)}</dd></div>
-      <div><dt>Evidence</dt><dd>{option.evidence_level}{option.measured.state === "stale" ? " · stale" : ""}</dd></div>
     </dl>
-    <OptionFormLine form={option.form} />
+    <ProductionBlock option={option} />
     <h4>Why</h4>
     <ul>{option.why.map((item) => <li key={item}>{item}</li>)}</ul>
     <div className="waiver-not-supported">
@@ -757,19 +968,10 @@ function MeasuredCard({ option, mode, kicker, onDetails }: {
         <ul>{option.blockers.map((item) => <li key={item}>{item}</li>)}</ul>
       </details>
     </div>
+    <EvidenceDimensions dimensions={option.evidence_dimensions} />
     <p className="waiver-user-action">{option.user_action}</p>
     <button className="button button-quiet" onClick={() => onDetails(option)}>View details: {option.player_name}</button>
   </article>;
-}
-
-function OptionSummary({ option, mode, onDetails }: { option: DecisionOption; mode: WaiverMode; onDetails: (option: DecisionOption) => void }) {
-  return <div className="waiver-option">
-    <p className="waiver-option-head"><strong className="waiver-option-name">{option.player_name}</strong> <span>{positionText(option.positions)}</span> <ClassBadge option={option} /> <AvailabilityBadge option={option} /></p>
-    <p className="waiver-option-facts">{measuredPpg(option)} · {gamesText(option, mode)} · Fills: {fillsText(option)} · Evidence: {option.evidence_level}{option.measured.state === "stale" ? " (stale)" : ""}</p>
-    <OptionFormLine form={option.form} />
-    <p className="waiver-option-reason">{option.reason}</p>
-    <button className="button button-quiet" onClick={() => onDetails(option)}>View details: {option.player_name}</button>
-  </div>;
 }
 
 export function OtherGoodOptions({ board, analysis, onDetails, onAnalyzePair }: {
@@ -803,23 +1005,25 @@ export function OtherGoodOptions({ board, analysis, onDetails, onAnalyzePair }: 
   const potential = pick(support.potential_target_ids).filter((option) => option.classification === "POTENTIAL_TARGET"
     && option.availability_classification != null && CHECKABLE_AVAILABILITY.has(option.availability_classification));
   const unverified = support.availability_state !== "available";
+  const fullRoster = board.roster_capacity?.transaction_shape === "ADD_DROP";
   const swaps = analysis?.roster_capacity?.transaction_shape === "ADD_DROP" ? analysis.watch_transactions : [];
   return <section className="panel waiver-panel" aria-labelledby="waiver-options">
     <h2 id="waiver-options">OTHER GOOD OPTIONS</h2>
+    <p className="waiver-window-note">Each card answers the transaction question for its exact best comparison: SUPPORTED ADD, WATCH ONLY, NEAR TIE, DO NOT ADD or CANNOT EVALUATE{fullRoster ? ", with the exact drop" : ""}. "Best" never means supported unless the card says SUPPORTED ADD.</p>
     {withheld.map((item) => <ContractError key={`${item.name}-${item.reason}`} name={item.name} reason={item.reason} />)}
     {unverified && <p className="waiver-availability-note">{support.availability_note}</p>}
     <ul className="waiver-option-grid">{support.groups.map((group) => {
       const option = groupOptions.get(group.key);
-      return <li key={group.key} className="waiver-option-card">
+      return <li key={group.key} className={`waiver-option-card is-${(option?.verdict ?? "empty").toLowerCase()}`}>
         <h3>{group.title}</h3>
-        {option ? <OptionSummary option={option} mode={board.mode} onDetails={onDetails} />
+        {option ? <OptionCard option={option} mode={board.mode} fullRoster={fullRoster} onDetails={onDetails} />
           : <p>{group.player_id != null ? "Withheld: this option failed the waiver-eligibility check." : group.empty_reason}</p>}
       </li>;
     })}</ul>
     <h3>WATCHLIST</h3>
-    <p className="waiver-window-note">Measurable players worth monitoring. These are not add recommendations.</p>
+    <p className="waiver-window-note">Measurable players worth monitoring, each with its own verdict. These are not add recommendations.</p>
     {watch.length
-      ? <ul className="waiver-option-list">{watch.map((option) => <li key={option.player_id}><OptionSummary option={option} mode={board.mode} onDetails={onDetails} /></li>)}</ul>
+      ? <ul className="waiver-option-list">{watch.map((option) => <li key={option.player_id}><OptionCard option={option} mode={board.mode} fullRoster={fullRoster} onDetails={onDetails} /></li>)}</ul>
       : <p>No additional WATCH players: nobody else out-produces your lowest-producing roster player{support.roster_floor_ppg != null ? ` (${support.roster_floor_ppg.toFixed(1)} measured fantasy PPG)` : ""}.</p>}
     {swaps.length > 0 && <><h4>Measured swaps to watch</h4><WatchSwapList analysis={analysis as TransactionAnalysis} onAnalyze={onAnalyzePair} /></>}
     {unverified && <section className="waiver-potential" aria-labelledby="waiver-potential-title">
@@ -843,12 +1047,16 @@ function ReplacementCard({ candidate, rank, onAnalyze }: {
   onAnalyze: (id: number) => void;
 }) {
   const comparison = candidate.comparison;
+  const explanation = comparison?.explanation ?? null;
   const risks = sampleRisk(candidate);
-  return <article className="waiver-replacement-card">
+  return <article className={`waiver-replacement-card is-${(candidate.verdict ?? "CANNOT_EVALUATE").toLowerCase()}`}>
     <header><div><p className="waiver-kicker">Replacement option {rank}</p><h4>{candidate.player_name}</h4></div>
-      <span className={`waiver-decision is-${candidate.roster_decision}`}>{candidate.recommended_action}</span></header>
+      <VerdictBadge verdict={candidate.verdict} /></header>
     <p>{candidate.position ?? "Position unknown"} · {candidate.nba_team ?? "NBA team unknown"} · Yahoo status: {yahooStatusText(candidate)}</p>
+    <p className="waiver-option-headline">{candidate.verdict_text || candidate.action_label}</p>
     {candidate.action_label && <p><ActionBadge action={actionOf(candidate)} /> {candidate.action_label}</p>}
+    {explanation && <p><strong>Why:</strong> {explanation.statement}</p>}
+    {explanation?.primary_tradeoff && <p className="waiver-tradeoff"><strong>Primary tradeoff:</strong> {explanation.primary_tradeoff}</p>}
     <CandidateSamples candidate={candidate} />
     <RoleEvidence candidate={candidate} />
     <p><strong>Ranking blend:</strong> {candidate.ranking_value.label} · blended value {number(candidate.ranking_value.value)} · recent weight {candidate.ranking_value.recent_weight === null ? "Unavailable" : `${(candidate.ranking_value.recent_weight * 100).toFixed(0)}%`} · historical {number(candidate.ranking_value.historical_value)} ({candidate.ranking_value.historical_games} games, {candidate.ranking_value.historical_season ?? "season unavailable"}). Historical value is not a projection.</p>
@@ -856,22 +1064,17 @@ function ReplacementCard({ candidate, rank, onAnalyze }: {
       <div><dt>Selected drop</dt><dd>{comparison?.player_name ?? "No measured comparison for this roster player"}</dd></div>
       <div><dt>Roster before</dt><dd>{number(comparison?.before_score)}</dd></div>
       <div><dt>Roster after</dt><dd>{number(comparison?.after_score)}</dd></div>
-      <div><dt>Net improvement</dt><dd>{number(comparison?.net_improvement)}</dd></div>
+      <div><dt>Net improvement</dt><dd>{indexNet(comparison?.net_improvement)}</dd></div>
     </dl>
     {comparison && (comparison.net_improvement === null || comparison.net_improvement <= 0
       ? <p className="waiver-outcome is-no-improvement"><strong>No measured improvement.</strong> This swap is a tradeoff, not a recommendation to replace the selected player.</p>
-      : <p className="waiver-outcome"><strong>Positive measured roster-index change.</strong> This is descriptive evidence, not a projection or guarantee.</p>)}
+      : explanation && !explanation.consistent
+        ? <p className="waiver-outcome is-no-improvement"><strong>{explanation.near_tie ? "Near tie — no strong preference." : "Positive index change not supported."}</strong> {explanation.blocker ?? explanation.statement}</p>
+        : <p className="waiver-outcome"><strong>Positive measured roster-index change.</strong> This is descriptive evidence, not a projection or guarantee.</p>)}
     {candidate.add_only_impact && <p className="waiver-outcome"><strong>Dropping is optional.</strong> Without a drop: {number(candidate.add_only_impact.before_score)} → {number(candidate.add_only_impact.after_score)} ({signed(candidate.add_only_impact.net_improvement)}) using an open roster spot.</p>}
-    {comparison && <>
-      <p><strong>Component changes</strong> (roster-mean / coverage indices; before → after; delta)</p>
-      <ul className="waiver-component-list">{Object.entries(comparison.component_before).map(([key, before]) => {
-        const after = comparison.component_after[key as keyof typeof comparison.component_after];
-        const delta = comparison.component_deltas[key as keyof typeof comparison.component_deltas];
-        return <li key={key}>{label(key)}: {number(before)} → {number(after)} ({delta !== null && delta > 0 ? "+" : ""}{number(delta)})</li>;
-      })}</ul>
-      <p><strong>Effective comparison weights:</strong> {Object.entries(comparison.effective_weights).map(([key, value]) => `${label(key)} ${(value * 100).toFixed(1)}%`).join(" · ") || "Unavailable"}.</p>
-      <p><strong>Starting-slot compatibility:</strong> {comparison.starting_slots_before ?? "?"} before → {comparison.starting_slots_after ?? "?"} after; {comparison.starting_slots_required ?? "?"} starting slots required.</p>
-    </>}
+    {comparison && (explanation
+      ? <details><summary>Exact calculation for this drop</summary><ExplanationDetails explanation={explanation} /></details>
+      : <p><strong>Starting-slot compatibility:</strong> {comparison.starting_slots_before ?? "?"} before → {comparison.starting_slots_after ?? "?"} after; {comparison.starting_slots_required ?? "?"} starting slots required.</p>)}
     <p><strong>Schedule:</strong> {candidate.schedule.games_remaining ?? "Unknown"} games, {candidate.schedule.off_day_games ?? "unknown"} off-day games, {candidate.schedule.back_to_backs ?? "unknown"} back-to-back pairs · {candidate.schedule.window_start}–{candidate.schedule.window_end} Pacific · {candidate.schedule.opponents.join(", ") || "opponents unavailable"}.</p>
     <p><strong>Opportunity:</strong> {candidate.opportunity.role}; {number(candidate.opportunity.minutes)} minutes · opportunity index {number(candidate.components.opportunity)}.</p>
     <h5>Reasons and tradeoffs</h5>
@@ -881,6 +1084,14 @@ function ReplacementCard({ candidate, rank, onAnalyze }: {
     <button className="button button-quiet" onClick={() => onAnalyze(candidate.player_id)}>Analyze option: {candidate.player_name}</button>
   </article>;
 }
+
+// Derived from the same gated exact-pair decisions the optimizer uses.
+const ROSTER_DECISION_TEXT: Record<WaiverCandidate["roster_decision"], string> = {
+  review_replacement: "Supported replacement exists",
+  watch_replacement: "Watch only: positive but unsupported replacements",
+  keep_on_measured_model: "Keep: no supported replacement",
+  unavailable: "Cannot evaluate: no measured comparison",
+};
 
 function RosterPicker({ roster, selectedId, onSelect }: {
   roster: WaiverCandidate[];
@@ -901,7 +1112,7 @@ function RosterPicker({ roster, selectedId, onSelect }: {
       {matchingRoster.map((candidate) => <label className={`waiver-roster-card${candidate.player_id === selectedId ? " is-selected" : ""}`} key={candidate.player_id}>
         <input type="radio" name="selected-drop" value={candidate.player_id} checked={candidate.player_id === selectedId} onChange={() => onSelect(candidate.player_id)} />
         <span className="waiver-roster-main"><strong>{candidate.player_name}</strong><span>{candidate.position ?? "Position unknown"} · {yahooStatusText(candidate)} · {candidate.schedule.games_remaining ?? "?"} schedule games</span></span>
-        <span className="waiver-roster-evidence">{label(candidate.roster_decision)}<br />Recent {number(candidate.recent.value)} fantasy PPG · {candidate.recent.games} games<br />Season Evidence {number(candidate.ros.value)} fantasy PPG · {candidate.ros.games} games</span>
+        <span className="waiver-roster-evidence">{ROSTER_DECISION_TEXT[candidate.roster_decision] ?? label(candidate.roster_decision)}<br />Recent {number(candidate.recent.value)} fantasy PPG · {candidate.recent.games} games<br />Season Evidence {number(candidate.ros.value)} fantasy PPG · {candidate.ros.games} games</span>
       </label>)}
     </fieldset>
   </>;
@@ -967,6 +1178,7 @@ export function CompareDropSection({ board, selectedDropId, onSelect, replacemen
 }
 
 const DECISION_FILTERS = ["ADD ONLY", "MOVE TO IL, THEN ADD", "ADD + DROP", "BEST MEASURED OPTION", "WATCH", "MEASURED", "POTENTIAL TARGET", "NOT COMPARABLE"];
+const VERDICT_FILTERS = Object.keys(VERDICT_TEXT) as TransactionVerdict[];
 const EVIDENCE_ORDER = ["EXCELLENT", "GOOD", "LIMITED", "VERY LIMITED", "INSUFFICIENT FOR STRONG RECOMMENDATION", "NO CURRENT-SEASON EVIDENCE"];
 // Backend not-comparable reason key for O/OFS/NA players whose availability is unverified.
 const ONA_REASON = "Yahoo O/OFS/NA status";
@@ -994,6 +1206,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
   const [sampleFilter, setSampleFilter] = useState("all");
   const [availabilityFilter, setAvailabilityFilter] = useState("all");
   const [sortBy, setSortBy] = useState("decision");
+  const [verdictFilter, setVerdictFilter] = useState("all");
   const support = board.decision_support;
   if (board.model_version !== CURRENT_WAIVER_MODEL_VERSION) {
     return <p className="notice notice-error" role="alert">Board results use incompatible model {board.model_version}; expected {CURRENT_WAIVER_MODEL_VERSION}. Decision, ranking, and analysis actions are disabled.</p>;
@@ -1011,6 +1224,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
       && (positionFilter === "all" || positions.includes(positionFilter))
       && (needFilter === "all" || (needFilter === "HIGH" ? option.fills_level === "HIGH" : option.fills.length > 0))
       && (decisionFilter === "all" || decisionText(option) === decisionFilter)
+      && (verdictFilter === "all" || (option.verdict ?? "CANNOT_EVALUATE") === verdictFilter)
       && (evidenceFilter === "all" || option.evidence_level === evidenceFilter)
       && (statusFilter === "all" || (statusFilter === "unknown" ? option.yahoo_status === null && !noDesignation(option)
         : statusFilter === "no_designation" ? noDesignation(option) : option.yahoo_status === statusFilter))
@@ -1026,8 +1240,8 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
   return <section className="panel waiver-panel" aria-labelledby="waiver-ranked">
     <h2 id="waiver-ranked">FULL WAIVER LIST</h2>
     <details className="waiver-full-list">
-      <summary>Show all {options.length} players ({confirmed} confirmed available · {options.length - confirmed} availability unverified)</summary>
-      <p>Ranked by the backend: supported moves first, then the best measured option, WATCH, measured players, potential targets whose availability is unverified, and players who cannot be compared. Fantasy PPG is historical Yahoo-rule production, not a projection. Filters only narrow the list and sorting is exploratory: neither creates a recommendation or changes BEST MOVES or the backend rank.</p>
+      <summary>Show all {options.length} players ({confirmed} unrostered in every current league roster · {options.length - confirmed} availability unverified)</summary>
+      <p>Ranked by the backend: supported moves first, then the best measured option, WATCH, measured players, potential targets whose availability is unverified, and players who cannot be compared. Each row shows the backend verdict for its exact best comparison. "Unrostered" means absent from every current league roster; Yahoo FA/waiver state must still be confirmed in Yahoo. Fantasy PPG is historical Yahoo-rule production, not a projection. Filters only narrow the list and sorting is exploratory: neither creates a recommendation or changes BEST MOVES or the backend rank.</p>
       <p>{onaExcluded} Yahoo O/OFS/NA players excluded. Players on another team's saved roster are not listed.</p>
       {!options.length ? <p role="status">No available or availability-unverified players can be listed. Review ADVANCED EVIDENCE for the exact reasons.</p> : <>
         <div className="waiver-filters" aria-label="Waiver list filters">
@@ -1045,16 +1259,22 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
               <option value="all">Any</option><option value="need">Fills a need</option><option value="HIGH">Fills a HIGH need</option>
             </select>
           </label>
+          <label className="waiver-filter">Verdict
+            <select value={verdictFilter} onChange={(event) => setVerdictFilter(event.target.value)}>
+              <option value="all">All verdicts</option>
+              {VERDICT_FILTERS.map((item) => <option key={item} value={item}>{VERDICT_TEXT[item]}</option>)}
+            </select>
+          </label>
           <label className="waiver-filter">Action type
             <select value={decisionFilter} onChange={(event) => setDecisionFilter(event.target.value)}>
               <option value="all">All action types</option>
               {DECISION_FILTERS.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
-          <label className="waiver-filter">Evidence level
+          <label className="waiver-filter">Current-season sample
             <select value={evidenceFilter} onChange={(event) => setEvidenceFilter(event.target.value)}>
-              <option value="all">All evidence</option>
-              {EVIDENCE_ORDER.map((item) => <option key={item} value={item}>{item}</option>)}
+              <option value="all">Any current-season sample</option>
+              {EVIDENCE_ORDER.map((item) => <option key={item} value={item}>{SAMPLE_BAND_TEXT[item as WaiverSampleLabel]}</option>)}
             </select>
           </label>
           <label className="waiver-filter">Yahoo status
@@ -1076,7 +1296,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
           </label>
           <label className="waiver-filter">Availability
             <select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value)}>
-              <option value="all">All</option><option value="confirmed">Confirmed available</option><option value="unverified">Availability unverified</option>
+              <option value="all">All</option><option value="confirmed">Unrostered in every current league roster</option><option value="unverified">Availability unverified</option>
             </select>
           </label>
           <label className="waiver-filter">Sort by
@@ -1093,7 +1313,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
           <div className="waiver-table-scroll" role="region" aria-label="Waiver list, scroll horizontally for all columns" tabIndex={0}>
             <table className="waiver-table">
               <caption>Backend-ranked players. Details open evidence only; no Yahoo transaction is executed.</caption>
-              <thead><tr>{["Rank", "Player", "Pos", "Availability", "Yahoo status", "Decision", "Fills need", "Measured fantasy PPG", "Form FP/G (L7 · L14 · L30 · Season)", "Games", "Next 7 / 14", "Evidence", "Details"].map((column) =>
+              <thead><tr>{["Rank", "Player", "Pos", "Availability", "Yahoo status", "Verdict", "Fills need", "Measured fantasy PPG", "Form FP/G (Last 7 · 14 · 30 · Season)", "Games", "Next 7 / 14", "Current-season sample", "Details"].map((column) =>
                 <th key={column} scope="col">{column}</th>)}</tr></thead>
               <tbody>{rows.map((option) => <tr key={option.player_id}>
                 <td>{option.decision_rank}</td>
@@ -1101,13 +1321,13 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
                 <td>{positionText(option.positions, "Unknown")}</td>
                 <td><AvailabilityBadge option={option} /></td>
                 <td>{option.status_label}</td>
-                <td><ClassBadge option={option} /><small>{option.reason}</small></td>
+                <td><VerdictBadge verdict={option.verdict} /><small>{option.headline || option.reason}</small><small>List group: {decisionText(option)}</small></td>
                 <td>{option.fills.join(", ") || "None"}{option.fills_level && <small>{option.fills_level} priority</small>}</td>
-                <td>{number(option.measured.value)}<small>{option.measured.current_games} current-season games{option.measured.prior_season ? ` · blended with ${option.measured.prior_season}` : ""}{option.measured.state === "stale" ? " · stale" : ""}</small></td>
-                <td>{option.form ? `${ppgText(option.form.last_7_ppg)} · ${ppgText(option.form.last_14_ppg)} · ${ppgText(option.form.last_30_ppg)} · ${ppgText(option.form.season_ppg)}` : "Unavailable"}<small>{option.form?.trend ?? "No form evidence"}</small></td>
+                <td>{number(option.measured.value)}<small>{measuredBasisLabel(option.measured)}{option.measured.state === "stale" ? " · stale" : ""}</small></td>
+                <td>{option.form ? `${ppgText(option.form.last_7_ppg, option.form.last_7_reason)} · ${ppgText(option.form.last_14_ppg, option.form.last_14_reason)} · ${ppgText(option.form.last_30_ppg, option.form.last_30_reason)} · ${ppgText(option.form.season_ppg, option.form.season_reason)}` : "Unavailable"}<small>{option.form ? trendText(option.form.trend) : "No form evidence"}</small></td>
                 <td>{option.games_in_window ?? "Unknown"}<small>{option.games_in_window_state}</small></td>
                 <td>{option.form ? `${option.form.next_7_games ?? "?"} / ${option.form.next_14_games ?? "?"}` : "Unknown"}</td>
-                <td>{option.evidence_level}</td>
+                <td>{option.current_season_games ?? "?"} games<small>{SAMPLE_BAND_TEXT[option.evidence_level]}</small></td>
                 <td><button className="button button-quiet" onClick={() => onDetails(option)}>Details: {option.player_name}</button></td>
               </tr>)}</tbody>
             </table>
@@ -1205,6 +1425,7 @@ export function ImpactContent({ impact, selectedDropId }: { impact: WaiverImpact
     <p>{player.position ?? "Unknown position"} · {player.nba_team ?? "Unknown NBA team"} · Yahoo {yahooStatusText(player)} · {label(player.availability)} · {label(player.hold_type)}</p>
     {player.action_label && <p className="waiver-action-label"><ActionBadge action={actionOf(player)} /><IntentBadge intent={player.move_intent} /> <span>{player.action_label}</span></p>}
     <RosterDecision player={player} comparison={comparison} />
+    <EvidenceDimensions dimensions={player.evidence_dimensions} />
     <FormPanel candidate={player} />
     <CandidateSamples candidate={player} />
     <RoleEvidence candidate={player} />
@@ -1220,22 +1441,28 @@ export function ImpactContent({ impact, selectedDropId }: { impact: WaiverImpact
         : type === "MOVE_TO_IL_THEN_ADD"
           ? `Move ${comparison.moved_to_injury_slot_player_name ?? "the injured player"} to IL (that player stays on your roster), then add ${player.player_name}. No player is dropped.`
           : `Add ${player.player_name}; no player is dropped.`}
-        {comparison.target_roster_position ? ` Position filled: ${comparison.target_roster_position}.` : ""}
+        {comparison.target_roster_position ? (comparison.starting_slots_after != null && comparison.starting_slots_before != null
+          && comparison.starting_slots_after > comparison.starting_slots_before
+          ? ` Fills the ${comparison.target_roster_position} starting slot.`
+          : ` Takes the ${comparison.target_roster_position} slot (no change in matched starting slots).`) : ""}
         {comparison.open_roster_spots_before != null ? ` Open roster spots ${comparison.open_roster_spots_before} → ${comparison.open_roster_spots_after}.` : ""}</p>
       <dl className="waiver-comparison"><div><dt>Roster before</dt><dd>{number(comparison.before_score)}</dd></div>
         <div><dt>Roster after</dt><dd>{number(comparison.after_score)}</dd></div>
-        <div><dt>Net model improvement</dt><dd>{number(comparison.net_improvement)}</dd></div></dl>
+        <div><dt>Net model improvement</dt><dd>{indexNet(comparison.net_improvement)}</dd></div></dl>
       <p>This is a descriptive roster-index difference, not expected fantasy points or a prediction.</p>
+      {comparison.explanation && <p className="waiver-option-headline"><strong>Why:</strong> {comparison.explanation.statement}</p>}
+      {modelDrop && <WhyThisDrop choice={player.drop_choice} alternatives={player.drop_alternatives} />}
       <ul>{comparison.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-      <h4>Component changes</h4>
-      <dl className="waiver-quality">{Object.entries(comparison.component_deltas).map(([key, value]) =>
-        <div key={key}><dt>{label(key)}</dt><dd>{number(value)}</dd></div>)}</dl>
-      <p>Starting-slot compatibility: {comparison.starting_slots_before ?? "?"} before → {comparison.starting_slots_after ?? "?"} after; {comparison.starting_slots_required ?? "?"} required.</p>
+      <h4>Exact calculation</h4>
+      {comparison.explanation ? <ExplanationDetails explanation={comparison.explanation} />
+        : <dl className="waiver-quality">{Object.entries(comparison.component_deltas).map(([key, value]) =>
+          <div key={key}><dt>{label(key)}</dt><dd>{number(value)}</dd></div>)}</dl>}
     </> : <p>{selectedDropId !== null
       ? `No measured comparison is available for selected roster player ID ${selectedDropId}. The selected drop will not be changed automatically.`
       : `No comparison is available: ${(player.evidence_blockers ?? [])[0] ?? "required roster-capacity or production evidence is missing."} No drop is assumed.`}</p>}
     <details><summary>Advanced Evidence · components, weights, and source quality</summary>
-      <h3>Component scores and effective weights</h3>
+      <h3>Per-player component scores</h3>
+      <p>This player's own available components and renormalized weights (used only for list ordering). Every pair comparison above uses the request's common component mask.</p>
       <dl className="waiver-quality">{Object.entries(player.components).map(([key, value]) =>
         <div key={key}><dt>{label(key)}</dt><dd>{exact(value)} / 100 · {((player.effective_weights[key] ?? 0) * 100).toFixed(1)}%</dd></div>)}</dl>
       <Quality fields={player.data_quality} />
@@ -1246,7 +1473,7 @@ export function ImpactContent({ impact, selectedDropId }: { impact: WaiverImpact
 }
 
 function netText(value: number | null | undefined): string {
-  return value == null ? "Unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(3)} roster-index points`;
+  return value == null ? "Unavailable" : `${netDigits(value)} roster-index points`;
 }
 
 /** The decision first: who to add, who to drop, the measured net, why, and what still blocks it. */
@@ -1258,8 +1485,11 @@ function RosterDecision({ player, comparison }: { player: WaiverCandidate; compa
       <div><dt>ADD</dt><dd>{player.player_name}</dd></div>
       <div><dt>DROP</dt><dd>{comparison ? (comparison.player_id != null ? comparison.player_name : "No drop needed") : "Not measured"}</dd></div>
       <div><dt>NET</dt><dd>{netText(comparison?.net_improvement)}</dd></div>
+      <div><dt>VERDICT</dt><dd><VerdictBadge verdict={player.verdict} /></dd></div>
     </dl>
-    <p><strong>WHY:</strong> {player.move_intent_detail || player.action_label || "No supported move is established."}</p>
+    {player.verdict_text && <p className="waiver-option-headline">{player.verdict_text}</p>}
+    <p><strong>WHY:</strong> {comparison?.explanation?.statement || player.move_intent_detail || player.action_label || "No supported move is established."}</p>
+    {comparison?.explanation?.primary_tradeoff && <p className="waiver-tradeoff"><strong>Primary tradeoff:</strong> {comparison.explanation.primary_tradeoff}</p>}
     {blockers.length > 0 && <><p><strong>BLOCKERS:</strong></p><ul>{blockers.map((item) => <li key={item}>{item}</li>)}</ul></>}
   </section>;
 }
@@ -1327,14 +1557,15 @@ function WatchSwapList({ analysis, onAnalyze }: { analysis: TransactionAnalysis;
       WATCH: {swap.add_player.player_name} / drop {swap.drop_player.player_name}.
       <p>Yahoo fantasy PPG: {number((analysis.mode === "ros" ? swap.add_player.ros : swap.add_player.recent).value)} · {swap.add_player.current_season_games} current-season games · {swap.add_player.schedule.games_remaining ?? "Unknown"} games in {modeWindow(analysis.mode)} · Yahoo status {yahooStatusText(swap.add_player)}.</p>
       <FormLine form={swap.add_player.form} name="Add" />
-      <p><strong>Why watch:</strong> positive measured roster-index change with observed comparison evidence.</p>
+      <p><strong>Why watch:</strong> {swap.comparison.explanation?.statement ?? "positive measured roster-index change with observed comparison evidence."}</p>
       {/* The backend names the exact gate, player and window that block this pair. */}
       <p><strong>Why not add:</strong> {swap.add_player.evidence_blockers?.length
         ? swap.add_player.evidence_blockers.join(" ")
         : "The supported-move evidence gates are not met."}</p>
       <p>Role trend {swap.add_player.opportunity.current_role?.trend ?? "INSUFFICIENT EVIDENCE"} · schedule {swap.add_player.schedule.diagnostic_reason}.</p>
       <details><summary>Measured index and blockers</summary>
-        <p>+{exact(swap.comparison.net_improvement)} descriptive model-index points; this is not projected fantasy points, wins, or probability.</p>
+        <p>{indexNet(swap.comparison.net_improvement)} (exact {exact(swap.comparison.net_improvement)}); a descriptive model index, not projected fantasy points, wins, or probability.</p>
+        {swap.comparison.explanation && <ExplanationDetails explanation={swap.comparison.explanation} />}
         <ul>{swap.reasons.slice(0, 4).map((reason) => <li key={reason}>{reason}</li>)}</ul>
       </details>
       <details><summary>Current role and schedule evidence: {swap.add_player.player_name}</summary><RoleEvidence candidate={swap.add_player} /></details>
@@ -1410,11 +1641,19 @@ export function BestMoves({ board, analysis, failure, boardFailed = false, mode,
     if (reason) withheld.push({ name, reason });
     return reason === null;
   };
+  // A supported card must carry the backend's SUPPORTED ADD verdict; any other verdict is a contradiction.
+  const supportedVerdict = (name: string, verdict: TransactionVerdict | null | undefined) => {
+    if (verdict === "SUPPORTED_ADD") return true;
+    withheld.push({ name, reason: `its backend verdict is ${verdict ? VERDICT_TEXT[verdict] : "missing"}, not SUPPORTED ADD` });
+    return false;
+  };
   const fills = (usable?.add_only_recommendations ?? []).filter((fill) =>
-    allowed(fill.add_player.player_id, fill.add_player.player_name, fill.add_player.availability_classification));
+    allowed(fill.add_player.player_id, fill.add_player.player_name, fill.add_player.availability_classification)
+    && supportedVerdict(fill.add_player.player_name, fill.add_player.verdict));
   const rawPair = usable?.best_transaction ?? null;
   const pair = rawPair && allowed(rawPair.add_player.player_id, rawPair.add_player.player_name,
-    rawPair.add_player.availability_classification) ? rawPair : null;
+    rawPair.add_player.availability_classification)
+    && supportedVerdict(`${rawPair.add_player.player_name} / ${rawPair.drop_player.player_name}`, rawPair.add_player.verdict) ? rawPair : null;
   const fullRoster = board?.roster_capacity?.transaction_shape === "ADD_DROP";
   // On a full roster the board and the best-move analysis must name the same supported pair (or both none);
   // otherwise nothing is shown rather than two contradictory answers.
@@ -1454,7 +1693,7 @@ export function BestMoves({ board, analysis, failure, boardFailed = false, mode,
       {fills.map((fill, index) => <MoveCard key={fill.add_player.player_id} fill={fill} mode={mode}
         kicker={index === 0 ? "Best move now" : `Also fill open spot ${fill.step} of ${fills.length}`} onAnalyze={onAnalyzeFill} />)}
       {pair && <PairCard swap={pair} mode={mode} capacity={usable?.roster_capacity} onAnalyze={onAnalyzePair} />}
-      {measured.map((option, index) => <MeasuredCard key={option.player_id} option={option} mode={mode}
+      {measured.map((option, index) => <MeasuredCard key={option.player_id} option={option} mode={mode} fullRoster={fullRoster}
         kicker={fullRoster ? "Top target to check" : supported ? "Next open spot: no supported add yet"
           : index === 0 ? "Top target to check" : "Second open spot"} onDetails={onDetails} />)}
     </div>}

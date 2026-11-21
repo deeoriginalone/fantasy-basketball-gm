@@ -34,6 +34,7 @@ from app.features.waivers.contracts import (
     OptionGroupKey,
     OptionForm,
     OptionGroupPick,
+    OptionPair,
     SampleLabel,
     availability_actionable,
     availability_class,
@@ -54,25 +55,40 @@ MAX_MEASURED_CARDS = 2
 WATCH_LIMIT = 5
 POTENTIAL_TARGET_LIMIT = 10
 SUPPORTED_TYPES = frozenset({"ADD_ONLY", "MOVE_TO_IL_THEN_ADD", "ADD_DROP"})
+# Group nouns; the title is qualified by the pick's verdict, so "best" never implies a supported add.
 GROUPS: tuple[tuple[OptionGroupKey, str], ...] = (
-    ("BEST_GUARD", "BEST GUARD"),
-    ("BEST_WING_FORWARD", "BEST WING / FORWARD"),
-    ("BEST_CENTER", "BEST CENTER"),
-    ("BEST_MULTI_POSITION", "BEST MULTI-POSITION OPTION"),
-    ("BEST_SHORT_TERM", "BEST SHORT-TERM SCHEDULE"),
-    ("BEST_LONGER_TERM", "BEST LONGER-TERM OPTION"),
+    ("BEST_GUARD", "GUARD"),
+    ("BEST_WING_FORWARD", "WING / FORWARD"),
+    ("BEST_CENTER", "CENTER"),
+    ("BEST_MULTI_POSITION", "MULTI-POSITION OPTION"),
+    ("BEST_SHORT_TERM", "SHORT-TERM SCHEDULE OPTION"),
+    ("BEST_LONGER_TERM", "LONGER-TERM OPTION"),
 )
+VERDICT_ORDER = {"SUPPORTED_ADD": 0, "WATCH_ONLY": 1, "NEAR_TIE": 2, "DO_NOT_ADD": 3, "CANNOT_EVALUATE": 4}
+
+
+def group_title(noun: str, verdict: str | None) -> str:
+    if verdict == "SUPPORTED_ADD":
+        return f"BEST SUPPORTED {noun} ADD"
+    if verdict == "WATCH_ONLY":
+        return f"BEST AVAILABLE {noun} TO MONITOR — not a supported add"
+    if verdict == "NEAR_TIE":
+        return f"BEST AVAILABLE {noun} — near tie, no strong preference"
+    if verdict == "DO_NOT_ADD":
+        return f"BEST AVAILABLE {noun} — do not add: no supported positive swap"
+    return f"BEST AVAILABLE {noun} — cannot evaluate yet"
 GROUP_POSITIONS = {"BEST_GUARD": {"PG", "SG"}, "BEST_WING_FORWARD": {"SF", "PF"}, "BEST_CENTER": {"C"}}
 METHOD = (
     "Measured production is Yahoo-rule fantasy points per game (PTS + 1.2 REB + 1.5 AST + 3 BLK + 3 STL - TO) "
     "from persisted NBA games. The current sample (the last 14 days when present in Rest of Week, Next 7 Days and Next 14 Days, "
     "otherwise this season) is shrunk toward independent prior-season production with weight n/(n+10); without "
     f"prior-season history at least {MIN_UNSHRUNK_GAMES} current-season games are required. Import age never hides a "
-    "value; it is labeled. Ranking: players who fill an open positional need first, then measured production, needs "
-    "covered and current-season games. Only players with confirmed Yahoo availability (absent from every current league "
-    "roster, or explicit Yahoo FA/W state) are featured; players whose availability is unconfirmed appear only as "
-    "POTENTIAL TARGETS TO CHECK IN YAHOO. These are options to check in Yahoo, never supported ADD, STREAM or MUST ADD "
-    "recommendations."
+    "value; it is labeled. Every featured option carries the backend verdict for its exact best comparison (SUPPORTED "
+    "ADD, WATCH ONLY, NEAR TIE, DO NOT ADD or CANNOT EVALUATE) and, on a full roster, the exact drop. OTHER GOOD OPTIONS "
+    "groups rank by that verdict first, then the group's own evidence, then the exact pair net. Only players absent "
+    "from every current league roster (or with explicit Yahoo FA/W state) are featured; Yahoo FA/waiver state must "
+    "still be confirmed in Yahoo. Players whose availability is unverified appear only as POTENTIAL TARGETS TO CHECK "
+    "IN YAHOO. Decision support never creates a supported ADD, STREAM or MUST ADD."
 )
 
 
@@ -179,12 +195,53 @@ def option_form(row: Candidate) -> OptionForm | None:
     def pair(key: str) -> tuple[float | None, int]:
         window = windows.get(key)
         return (window.fantasy_ppg, window.games) if window is not None else (None, 0)
+
+    def reason(key: str) -> str | None:
+        window = windows.get(key)
+        return (window.reason_label or None) if window is not None else "Not returned"
     (l7, g7), (l14, g14), (l30, g30) = pair("LAST_7_DAYS"), pair("LAST_14_DAYS"), pair("LAST_30_DAYS")
     (season, season_games), (previous, previous_games) = pair("CURRENT_SEASON"), pair("PREVIOUS_SEASON")
     return OptionForm(last_7_ppg=l7, last_7_games=g7, last_14_ppg=l14, last_14_games=g14, last_30_ppg=l30,
         last_30_games=g30, season_ppg=season, season_games=season_games, previous_season_ppg=previous,
         previous_season_games=previous_games, trend=row.form.trend.trend,
-        next_7_games=row.schedule.next_7_days_games, next_14_games=row.schedule.next_14_days_games)
+        next_7_games=row.schedule.next_7_days_games, next_14_games=row.schedule.next_14_days_games,
+        last_7_reason=reason("LAST_7_DAYS"), last_14_reason=reason("LAST_14_DAYS"),
+        last_30_reason=reason("LAST_30_DAYS"), season_reason=reason("CURRENT_SEASON"),
+        previous_season_reason=reason("PREVIOUS_SEASON"))
+
+
+def option_pair(row: Candidate) -> OptionPair | None:
+    """The exact comparison behind an option: drop (or no drop), net and the backend explanation on one basis."""
+    comparison = row.comparison
+    if comparison is None:
+        return None
+    explanation = comparison.explanation
+    add_basis = explanation.add_production if explanation is not None else None
+    drop_basis = explanation.drop_production if explanation is not None else None
+    return OptionPair(
+        comparison_type=comparison.comparison_type, drop_player_id=comparison.player_id,
+        drop_player_name=comparison.player_name if comparison.player_id is not None else None,
+        net=comparison.net_improvement,
+        add_ppg=add_basis.value if add_basis is not None else None,
+        drop_ppg=drop_basis.value if drop_basis is not None else None,
+        basis_label=add_basis.label if add_basis is not None else "",
+        add_games=explanation.add_games if explanation is not None else None,
+        drop_games=explanation.drop_games if explanation is not None else None,
+        window_points_gap=explanation.window_points_gap if explanation is not None else None,
+        starting_slots_before=comparison.starting_slots_before, starting_slots_after=comparison.starting_slots_after,
+        starting_slots_required=comparison.starting_slots_required,
+        statement=explanation.statement if explanation is not None else (comparison.reasons[0] if comparison.reasons else ""),
+        primary_reason=explanation.primary_reason if explanation is not None else "",
+        primary_tradeoff=explanation.primary_tradeoff if explanation is not None else None,
+        blocker=explanation.blocker if explanation is not None else None,
+        consistent=bool(explanation and explanation.consistent), near_tie=bool(explanation and explanation.near_tie),
+        alternatives=list(row.drop_alternatives), drop_choice=row.drop_choice,
+    )
+
+
+def option_headline(row: Candidate) -> str:
+    """The card's one-line answer: A ADD/DROP, B WATCH, C DO NOT ADD, D ADD ONLY / IL move (or cannot evaluate)."""
+    return row.verdict_text or row.action_label
 
 
 def _window_label(mode: Mode) -> str:
@@ -287,8 +344,8 @@ class _Builder:
             items.append("Current Yahoo status")
         if self.shape == "UNDETERMINED":
             items.append("Whether you have an open roster spot")
-        elif self.shape == "ADD_DROP":
-            items.append("Which roster player you would drop")
+        elif self.shape == "ADD_DROP" and (row.comparison is None or row.comparison.player_id is None):
+            items.append("Which roster player you would drop (no measured drop comparison is available)")
         if row.current_season_games < STRONG_SAMPLE_GAMES:
             items.append("Current role and minutes (small current-season sample)")
         return items
@@ -302,8 +359,18 @@ class _Builder:
         items = []
         if fills:
             top = fills[0]
-            items.append(f"Fills the {top.label} need ({top.level.lower()} priority)" + (
-                f" and also {', '.join(need.label for need in fills[1:])}" if len(fills) > 1 else "") + ".")
+            comparison = row.comparison
+            before = comparison.starting_slots_before if comparison is not None else None
+            after = comparison.starting_slots_after if comparison is not None else None
+            others = f" and also {', '.join(need.label for need in fills[1:])}" if len(fills) > 1 else ""
+            # "Fills" only when the exact comparison covers more starting slots; otherwise eligibility is all it shows.
+            if before is not None and after is not None and after > before:
+                items.append(f"Fills the {top.label} need ({top.level.lower()} priority){others}: matched starting "
+                    f"slots {before} to {after}.")
+            else:
+                items.append(f"Position-eligible for the {top.label} need ({top.level.lower()} priority){others}"
+                    + (f"; matched starting slots stay {before} to {after}." if before is not None and after is not None
+                        else "."))
         elif self.needs is not None and self.needs.summary:
             items.append("All starting positions are covered; this adds depth.")
         measured = row.measured
@@ -360,6 +427,11 @@ class _Builder:
                 else "CHECK IN YAHOO" if comparable else "VIEW DETAILS"),
             roster_rank_if_added=rank_if_added, roster_measured_count=roster_count,
             form=option_form(row), move_intent=row.move_intent if supported else None,
+            verdict=row.verdict, verdict_text=row.verdict_text, headline=option_headline(row),
+            # The exact pair and labeled evidence only for featured cards; full-list rows open details instead.
+            pair=option_pair(row) if detailed and comparable else None,
+            current_season_games=row.current_season_games,
+            evidence_dimensions=list(row.evidence_dimensions) if detailed else [],
         )
 
     def build(self) -> DecisionSupport:
@@ -426,16 +498,21 @@ class _Builder:
         groups: list[OptionGroupPick] = []
         featured: dict[int, str] = {}
         ranked_pool = sorted(measured_pool, key=self.key)
-        for key, title in GROUPS:
-            members, group_key, empty = self.group(key, ranked_pool)
+        # Every comparable, confirmed-available player can answer a group's transaction question: other supported
+        # adds, WATCH, and players whose best comparison says DO NOT ADD. Leaving supported and HOLD players out made
+        # groups feature only insufficient-evidence leftovers (2026-11-21 audit, WC-08).
+        group_pool = [*(row for row in supported if row.player_id not in used), *pool, *strict_watch]
+        for key, noun in GROUPS:
+            members, group_key, empty = self.group(key, group_pool)
             ranked = sorted(members, key=group_key) if group_key else []
             pick = next((row for row in ranked if row.player_id not in used), None)
             if pick is not None:
                 used.add(pick.player_id)
                 featured[pick.player_id] = self.group_reason(key, pick)
-                groups.append(OptionGroupPick(key=key, title=title, player_id=pick.player_id))
+                groups.append(OptionGroupPick(key=key, title=group_title(noun, pick.verdict), player_id=pick.player_id,
+                    verdict=pick.verdict))
             else:
-                groups.append(OptionGroupPick(key=key, title=title, empty_reason=(
+                groups.append(OptionGroupPick(key=key, title=f"BEST AVAILABLE {noun}", empty_reason=(
                     f"The best option here is already shown above: {ranked[0].player_name}." if ranked else empty)))
         watch = [row for row in sorted([*ranked_pool, *strict_watch], key=self.key) if row.player_id not in used and (
             row.recommended_action_type == "WATCH"
@@ -449,11 +526,11 @@ class _Builder:
         classes: dict[int, DecisionSupportClass] = {pid: "BEST_MEASURED_OPTION" for pid in best_ids}
         ranked_all = sorted([*pool, *strict_watch], key=self.key)
         for row in ranked_all:
+            # A group pick keeps its own class; its card shows the backend verdict (WATCH ONLY, DO NOT ADD, ...).
             classes.setdefault(row.player_id, "WATCH" if (
-                row.recommended_action_type == "WATCH" or row.player_id in featured or row.player_id in watch_ids)
-                else "MEASURED")
+                row.recommended_action_type == "WATCH" or row.player_id in watch_ids) else "MEASURED")
         order: list[tuple[Candidate, DecisionSupportClass, str]] = [
-            (row, "SUPPORTED_ACTION", row.action_label)
+            (row, "SUPPORTED_ACTION", featured.get(row.player_id) or row.action_label)
             for row in sorted(supported, key=lambda row: (row.decision_priority or 10**6, row.player_id))]
         for row in best:
             fills = self.fills(row)
@@ -524,49 +601,54 @@ class _Builder:
         )
 
     def group(self, key: OptionGroupKey, pool: list[Candidate]):
+        """Members and order of one group: the verdict first (supported add, WATCH ONLY, near tie, DO NOT ADD,
+        cannot evaluate), then confirmed availability, then the group's own evidence, then the exact pair net."""
+        def tier(row: Candidate) -> tuple[int, int]:
+            return VERDICT_ORDER.get(row.verdict, len(VERDICT_ORDER)), 0 if self.confirmed(row) else 1
+
+        def net(row: Candidate) -> float:
+            return -(row.net_improvement if row.net_improvement is not None else float("-inf"))
         if key in GROUP_POSITIONS:
             wanted = GROUP_POSITIONS[key]
             noun = {"BEST_GUARD": "guard", "BEST_WING_FORWARD": "wing or forward", "BEST_CENTER": "center"}[key]
             return ([row for row in pool if player_positions(row) & wanted],
-                lambda row: (0 if self.confirmed(row) else 1, -(row.measured.value or 0), row.player_id),
+                lambda row: (*tier(row), net(row), -(row.measured.value or 0), row.player_id),
                 f"No measurable {noun} option.")
         if key == "BEST_MULTI_POSITION":
             return ([row for row in pool if len(player_positions(row) & set(CORE_POSITIONS)) >= 2],
-                lambda row: (0 if self.confirmed(row) else 1, -len(self.fills(row)),
-                    -(row.measured.value or 0), row.player_id),
+                lambda row: (*tier(row), -len(self.fills(row)), net(row), -(row.measured.value or 0), row.player_id),
                 "No measurable multi-position option.")
         if key == "BEST_SHORT_TERM":
             if self.ctx.mode == "ros":
                 return [], None, ("Rest of Season Outlook is a longer-term view; choose Rest of Week, Next 7 Days or Next 14 Days for "
                     "schedule-driven options.")
             return ([row for row in pool if _games(row)[0] is not None],
-                lambda row: (0 if self.confirmed(row) else 1, -(_games(row)[0] or 0),
-                    -(row.measured.value or 0), row.player_id),
+                lambda row: (*tier(row), -(_games(row)[0] or 0), net(row), -(row.measured.value or 0), row.player_id),
                 "No measurable option has persisted schedule rows in this window.")
         return ([row for row in pool if row.measured.current_games + row.measured.prior_games >= LONGER_TERM_MIN_GAMES],
-            lambda row: (0 if self.confirmed(row) else 1, -(row.measured.value or 0), row.player_id),
+            lambda row: (*tier(row), -(row.ros.value or 0), net(row), row.player_id),
             f"No measurable option has at least {LONGER_TERM_MIN_GAMES} games across this season and last season.")
 
     def group_reason(self, key: OptionGroupKey, row: Candidate) -> str:
         rank, count = self.roster_rank(row)
-        context = f" Would rank {rank} of {count} on your roster." if rank is not None else ""
+        context = f" Would rank {rank} of {count} on your roster by measured fantasy PPG." if rank is not None else ""
         return self._group_reason(key, row) + context
 
     def _group_reason(self, key: OptionGroupKey, row: Candidate) -> str:
-        value = row.measured.value
+        value = _ppg(row.measured.value)
         if key == "BEST_MULTI_POSITION":
             fills = self.fills(row)
-            return (f"Covers {len(fills)} needs at {value:.1f} Yahoo fantasy PPG." if len(fills) >= 2
-                else f"Most flexible measured option at {value:.1f} Yahoo fantasy PPG.")
+            return (f"Covers {len(fills)} needs; measured {value} Yahoo fantasy PPG." if len(fills) >= 2
+                else f"Most flexible option in its verdict tier; measured {value} Yahoo fantasy PPG.")
         if key == "BEST_SHORT_TERM":
             games, state = _games(row)
-            return (f"Most scheduled games in {_window_label(self.ctx.mode)} ({games}"
-                + (", stale schedule" if state == "stale" else "") + f") at {value:.1f} Yahoo fantasy PPG.")
+            return (f"Most scheduled games in {_window_label(self.ctx.mode)} within its verdict tier ({games}"
+                + (", stale schedule" if state == "stale" else "") + f"); measured {value} Yahoo fantasy PPG.")
         if key == "BEST_LONGER_TERM":
-            return (f"Highest measured production with at least {LONGER_TERM_MIN_GAMES} games of evidence: "
-                f"{value:.1f} Yahoo fantasy PPG.")
+            return (f"Strongest Season Evidence in its verdict tier ({_ppg(row.ros.value)} Yahoo FP/G, "
+                f"{LONGER_TERM_MIN_GAMES}+ games across this season and last); historical, not a projection.")
         noun = {"BEST_GUARD": "guard", "BEST_WING_FORWARD": "wing / forward", "BEST_CENTER": "center"}[key]
-        return f"Highest measured {noun} production: {value:.1f} Yahoo fantasy PPG."
+        return f"Top available {noun} by verdict, then exact pair net; measured {value} Yahoo fantasy PPG."
 
     def reason(self, row: Candidate, tier: str, floor: float | None) -> str:
         value = row.measured.value
@@ -576,6 +658,10 @@ class _Builder:
             return (f"{value:.1f} Yahoo fantasy PPG" + (", above your lowest-producing roster player"
                 if floor is not None and value > floor else "") + "; ranks behind the featured options.")
         return f"Measured {value:.1f} Yahoo fantasy PPG."
+
+
+def _ppg(value: float | None) -> str:
+    return "unavailable" if value is None else f"{value:.1f}"
 
 
 def build_decision_support(ctx: Context, candidates: list[Candidate], supported_picks: list[int]) -> DecisionSupport:

@@ -17,8 +17,8 @@ const apiOutput = ts.transpileModule(api, {
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const VERSION = "waiver-horizon-evidence-phase6";
-const TWO_WEEK = "Two-week move supported by current production, role, roster impact, and persisted Next 14 Days schedule evidence.";
+const VERSION = "waiver-decision-integrity-phase7";
+const TWO_WEEK = "Two-week move. Main reason: Schedule: 7 games vs 5 games in Next 14 Days, +1.09 index points.";
 
 function load(states = []) {
   let index = 0;
@@ -68,20 +68,58 @@ const currentRole = {
   season_usage: .231, season_usage_quality: evidence,
   method: "Latest three vs preceding three games; not a projection.", limitations: ["Game-level usage is unavailable."],
 };
+const basis = (value, tweaks = {}) => ({
+  value, basis: "RECENT_BLENDED", label: "Last 14 days blended with 2025-26 (83% previous season): mostly previous-season evidence",
+  percentile: 80, window_value: value - 2, window_games: 2, window_weight: .1667, prior_value: value + .4, prior_games: 60,
+  prior_season: "2025-26", prior_weight: .8333, current_season_value: value - 2, current_season_games: 2,
+  math: `0.167 (2/12) x ${(value - 2).toFixed(2)} last 14 days (2 games) + 0.833 (10/12) x ${(value + .4).toFixed(2)} 2025-26 (60 games) = ${value.toFixed(2)}`,
+  ...tweaks,
+});
+// The backend explanation for one exact comparison; its single contribution reproduces the fixture net.
+const explanation = (dropName, net, tweaks = {}) => ({
+  horizon: "Rest of Week", window_start: "2026-10-25", window_end: "2026-10-31", comparison_type: "ADD_DROP",
+  add_player_id: 1, add_name: "Available Center", drop_player_id: 2, drop_name: dropName,
+  add_production: basis(32), drop_production: basis(24), production_gap: 8, add_games: 2, drop_games: 2,
+  add_window_points: 64, drop_window_points: 48, window_points_gap: 16,
+  starting_slots_before: 3, starting_slots_after: 3, starting_slots_required: 2,
+  contributions: [{ component: "roster_fit", before: 72, after: 72 + net, delta: net, effective_weight: 1, weighted_contribution: net }],
+  contribution_sum: net, net, favorable: net > 0 ? ["roster_fit"] : [], unfavorable: net < 0 ? ["roster_fit"] : [],
+  omitted: { acquisition_value: "acquisition value is unavailable (current rolling priority and transaction evidence are unverified); it never affects ranking." },
+  compensating: [], refuted: {}, net_without: {}, reconciled_net: net, near_tie: Math.abs(net) < .005, fragile: false, prior_season_driven: false,
+  checks: [{ key: "ARITHMETIC", passed: true, detail: `Weighted contributions sum to ${net}; returned net ${net}.` }],
+  consistent: Math.abs(net) >= .005,
+  statement: net > 0 ? `Roster fit: matched starting slots 3 to 3 of 2, +${net.toFixed(2)} index points. Net modeled change: +${net.toFixed(2)}.`
+    : `No improvement: keeping ${dropName} is preferable under this model (net ${net.toFixed(2)} index points).`,
+  primary_reason: net > 0 ? `Roster fit: +${net.toFixed(2)} index points` : "No component improves the roster index.",
+  tradeoffs: [], primary_tradeoff: null, blocker: null, ...tweaks,
+});
 const drop = (id, net = 10) => ({
   player_id: id, player_name: id === 2 ? "Weak Guard" : "Bench Forward", before_score: 66, after_score: 66 + net,
   net_improvement: net, component_before: components, component_after: { ...components, roster_fit: 72 + net },
   effective_weights: { roster_fit: .4 }, starting_slots_before: 3, starting_slots_after: 3,
   starting_slots_required: 2, component_deltas: { ...components, roster_fit: net }, reasons: ["Same measured model on both sides."],
   comparison_type: "ADD_DROP", target_roster_position: "C",
+  explanation: explanation(id === 2 ? "Weak Guard" : "Bench Forward", net),
 });
+// Backend verdict semantics, so fixtures carry the field every surface now renders.
+const VERDICT_OF = { ADD_ONLY: "SUPPORTED_ADD", MOVE_TO_IL_THEN_ADD: "SUPPORTED_ADD", ADD_DROP: "SUPPORTED_ADD", WATCH: "WATCH_ONLY",
+  HOLD: "DO_NOT_ADD", INSUFFICIENT_EVIDENCE: "CANNOT_EVALUATE" };
+const VERDICT_WORDS = { SUPPORTED_ADD: "SUPPORTED ADD", WATCH_ONLY: "WATCH ONLY", NEAR_TIE: "NEAR TIE — NO STRONG PREFERENCE",
+  DO_NOT_ADD: "DO NOT ADD", CANNOT_EVALUATE: "CANNOT EVALUATE" };
+const withVerdict = (row, action) => {
+  const verdict = row.verdict ?? VERDICT_OF[action] ?? "CANNOT_EVALUATE";
+  return { verdict, verdict_text: row.verdict_text ?? `${VERDICT_WORDS[verdict]} — ${row.player_name}.`, ...row, verdict };
+};
 const noDrop = (type = "ADD_ONLY", moved = null) => ({
   ...drop(2, 12), player_id: null, player_name: moved ? `No drop (move ${moved} to IL)` : "No drop (open roster slot)",
   comparison_type: type, moved_to_injury_slot_player_id: moved ? 9 : null, moved_to_injury_slot_player_name: moved,
   target_roster_position: "C", roster_spots_basis: 13, open_roster_spots_before: 1, open_roster_spots_after: 0,
   reasons: ["No-drop comparison over the same 13 non-injury roster spots: nobody is removed."],
+  explanation: explanation(null, 12, { comparison_type: type, drop_player_id: null, drop_name: null, drop_production: null,
+    drop_games: null, drop_window_points: null, window_points_gap: null,
+    statement: "Production: Available Center 32.0 Yahoo FP/G (last 14 days blended with the previous season), +12.00 index points. Net modeled change: +12.00." }),
 });
-const candidate = (id, name, comparison = drop(2), tweaks = {}) => ({
+const candidateRow = (id, name, comparison = drop(2), tweaks = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, position: "C",
   yahoo_team: "DEN", nba_team: "DEN", raw_yahoo_status: id === 3 ? "" : "Q",
   yahoo_status: id === 3 ? null : "Q", identity_mapping_state: "EXACT_NAME_TEAM",
@@ -103,6 +141,10 @@ const candidate = (id, name, comparison = drop(2), tweaks = {}) => ({
   availability_classification: UNROSTERED, availability_evidence: availabilityEvidence(),
   ...tweaks,
 });
+const candidate = (...args) => {
+  const row = candidateRow(...args);
+  return withVerdict(row, row.recommended_action_type);
+};
 const MANAGER = { availability: "rostered", availability_classification: "ROSTERED_BY_MANAGER", availability_evidence: availabilityEvidence("ROSTERED_BY_MANAGER") };
 const roster = [
   candidate(2, "Weak Guard", null, { ...MANAGER, roster_decision: "keep_on_measured_model", position: "G", recent: { value: 12, games: 10, season: "2026-27", label: "Recent", sample_label: "EXCELLENT", per_game_stats: {} }, ros: { value: 14, games: 60, season: "2025-26", label: "History", sample_label: "EXCELLENT", per_game_stats: {} } }),
@@ -175,7 +217,7 @@ const measured = (value, tweaks = {}) => ({
   as_of: "2026-10-25T19:04:00Z", sample_label: "INSUFFICIENT FOR STRONG RECOMMENDATION",
   detail: "Measured Yahoo fantasy PPG shrunk toward 2025-26. Imported 2026-10-25 (stale). Historical, not a projection.", ...tweaks,
 });
-const option = (id, name, tweaks = {}) => ({
+const optionRow = (id, name, tweaks = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, positions: "PG,SG", nba_team: "BOS", decision_rank: id - 20, classification: "MEASURED",
   action_type: "INSUFFICIENT_EVIDENCE", availability: "unrostered", availability_confirmed: true, availability_label: LABELS[UNROSTERED],
   availability_classification: UNROSTERED, availability_evidence: availabilityEvidence(),
@@ -189,8 +231,13 @@ const option = (id, name, tweaks = {}) => ({
     "Yahoo status is UNKNOWN (blank); blank is not treated as healthy.",
   ],
   confirm: ["Free-agent or waiver state in Yahoo", "Current Yahoo status", "Whether you have an open roster spot"],
-  user_action: "CHECK IN YAHOO", roster_rank_if_added: 10, roster_measured_count: 14, ...tweaks,
+  user_action: "CHECK IN YAHOO", roster_rank_if_added: 10, roster_measured_count: 14, current_season_games: 3, ...tweaks,
 });
+const option = (...args) => {
+  const row = optionRow(...args);
+  const verdict = withVerdict(row, row.action_type);
+  return { ...verdict, headline: row.headline ?? verdict.verdict_text };
+};
 // Unrostered in a stale or incomplete saved snapshot: never featured, only a potential target.
 const potential = (id, name, classification = "SOURCE_STALE", tweaks = {}) => option(id, name, {
   classification: "POTENTIAL_TARGET", availability: "unknown", availability_classification: classification,
@@ -206,12 +253,12 @@ const decisionSupport = (tweaks = {}) => ({
   availability_note: "League rosters are current: featured players were absent from every current league roster. Yahoo does not state free-agent vs waiver status in this import, so confirm it in Yahoo.",
   best_measured_ids: [21],
   groups: [
-    { key: "BEST_GUARD", title: "BEST GUARD", player_id: null, empty_reason: "The best option here is already shown above: Measured Guard." },
-    { key: "BEST_WING_FORWARD", title: "BEST WING / FORWARD", player_id: 22, empty_reason: null },
-    { key: "BEST_CENTER", title: "BEST CENTER", player_id: 23, empty_reason: null },
-    { key: "BEST_MULTI_POSITION", title: "BEST MULTI-POSITION OPTION", player_id: null, empty_reason: "No measurable multi-position option." },
-    { key: "BEST_SHORT_TERM", title: "BEST SHORT-TERM SCHEDULE", player_id: null, empty_reason: "No measurable option has persisted schedule rows in this window." },
-    { key: "BEST_LONGER_TERM", title: "BEST LONGER-TERM OPTION", player_id: null, empty_reason: "No measurable option has at least 20 games across this season and last season." },
+    { key: "BEST_GUARD", title: "BEST AVAILABLE GUARD", player_id: null, empty_reason: "The best option here is already shown above: Measured Guard." },
+    { key: "BEST_WING_FORWARD", title: "BEST AVAILABLE WING / FORWARD — cannot evaluate yet", player_id: 22, verdict: "CANNOT_EVALUATE", empty_reason: null },
+    { key: "BEST_CENTER", title: "BEST AVAILABLE CENTER — cannot evaluate yet", player_id: 23, verdict: "CANNOT_EVALUATE", empty_reason: null },
+    { key: "BEST_MULTI_POSITION", title: "BEST AVAILABLE MULTI-POSITION OPTION", player_id: null, empty_reason: "No measurable multi-position option." },
+    { key: "BEST_SHORT_TERM", title: "BEST AVAILABLE SHORT-TERM SCHEDULE OPTION", player_id: null, empty_reason: "No measurable option has persisted schedule rows in this window." },
+    { key: "BEST_LONGER_TERM", title: "BEST AVAILABLE LONGER-TERM OPTION", player_id: null, empty_reason: "No measurable option has at least 20 games across this season and last season." },
   ],
   watch_ids: [], potential_target_ids: [], potential_target_count: 0,
   options: [
@@ -303,9 +350,12 @@ const transactionAnalysis = (best = null, tweaks = {}) => {
     add_player: add, drop_player: roster[1], mode: "this_week", decision: "WATCH",
     comparison: add.comparison, reasons: ["Limited current-season evidence"], limitations: ["Partial schedule"],
   };
+  // The backend attaches the pair-specific add row to a supported transaction (decision ADD, verdict SUPPORTED ADD).
+  const supportedAdd = candidate(1, "Available Center", drop(4, 5), { recommended_action: "ADD", recommended_action_type: "ADD_DROP",
+    evidence_blockers: [], action_label: "ADD Available Center + DROP Bench Forward." });
   return {
     team_name: "Box Score Bully", mode: "this_week", model_version: VERSION, decision: best ? "ADD" : "HOLD",
-    best_transaction: best ? { ...swap, decision: "ADD" } : null,
+    best_transaction: best ? { ...swap, add_player: supportedAdd, decision: "ADD" } : null,
     watch_transactions: [swap], top_supported_transactions: [],
     evaluated_pair_count: 20, supported_pair_count: 0, watch_pair_count: 1, excluded_pair_count: 20,
     excluded_pair_reasons: { "Limited sample": 20 }, data_quality: {}, decision_reasons: ["No add/drop pair cleared all current evidence gates."],
@@ -379,15 +429,16 @@ test("replacement cards show a single measured drop, evidence, ranking blend and
   const { Replacements } = load();
   const html = render(Replacements, { board: board(), loading: false, error: "", selectedDropId: 2, onAnalyze() {} });
   assert.match(html, /Top 3 replacements/);
-  assert.match(html, /Recent evidence: insufficient for strong recommendation/);
-  assert.match(html, /INSUFFICIENT FOR STRONG RECOMMENDATION/);
+  assert.match(html, /Last 14 days sample: 2 games \(1–3 games: below the 7-game requirement\)\./);
+  assert.doesNotMatch(html, /INSUFFICIENT FOR STRONG RECOMMENDATION/i, "the bare label never appears without its failed requirement");
   assert.match(html, /historical, not a projection/);
   assert.match(html, /Recent \/ historical blend/);
   assert.match(html, /Roster before/);
   assert.match(html, /Roster after/);
   assert.match(html, /Net improvement/);
-  assert.match(html, /Starting-slot compatibility/);
-  assert.match(html, /Effective comparison weights/);
+  assert.match(html, /Exact calculation for this drop/);
+  assert.match(html, /Starting slots:<\/strong> 3 → 3 of 2 \(no fit change\)/);
+  assert.match(html, /Effective weight/);
   assert.match(html, /recent evidence is partial/);
   assert.match(html, /Yahoo status is unknown/);
   assert.match(html, /Top measured option: not established · limited evidence/);
@@ -474,10 +525,11 @@ test("NO CURRENT YAHOO DESIGNATION is rendered only from backend fields, with it
 test("negative net remains signed and is explicitly not presented as an improvement", () => {
   const { Replacements } = load();
   const html = render(Replacements, { board: board(4, "this_week", [1, 3]), loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
-  assert.match(html, /Net improvement<\/dt><dd>-5\.0/);
+  assert.match(html, /Net improvement<\/dt><dd>-5\.00 index points/);
   assert.match(html, /No measured improvement/);
   assert.match(html, /not a recommendation to replace the selected player/);
-  assert.match(html, /roster fit: 72\.0 → 67\.0 \(-5\.0\)/);
+  assert.match(html, /<th scope="row">roster fit<\/th><td>72\.0000<\/td><td>67\.0000<\/td><td>-5\.0000<\/td>/);
+  assert.match(html, /No improvement: keeping Bench Forward is preferable under this model/);
 });
 
 test("full waiver list starts collapsed, keeps backend rank order and filters by need, sample and availability", () => {
@@ -485,9 +537,9 @@ test("full waiver list starts collapsed, keeps backend rank order and filters by
   const result = board(null);
   result.decision_support = decisionSupport({ options: [...decisionSupport().options].reverse() });
   const html = render(FullWaiverList, { board: result, onDetails() {} });
-  assert.match(html, /<h2 id="waiver-ranked">FULL WAIVER LIST<\/h2><details class="waiver-full-list"><summary>Show all 5 players \(5 confirmed available · 0 availability unverified\)<\/summary>/);
-  for (const text of ["Search players", "Position", "Roster need", "Fills a HIGH need", "Action type", "Evidence level", "Yahoo status",
-    "Schedule", "3+ games in window", "Production sample", "7+ current-season games", "Availability", "Confirmed available",
+  assert.match(html, /<h2 id="waiver-ranked">FULL WAIVER LIST<\/h2><details class="waiver-full-list"><summary>Show all 5 players \(5 unrostered in every current league roster · 0 availability unverified\)<\/summary>/);
+  for (const text of ["Search players", "Position", "Roster need", "Fills a HIGH need", "Verdict", "Action type", "Current-season sample", "Yahoo status",
+    "Schedule", "3+ games in window", "Production sample", "7+ current-season games", "Availability", "Unrostered in every current league roster",
     "Availability unverified", "Decision priority (backend)", LABELS[UNROSTERED], "BEST MEASURED OPTION", "NOT COMPARABLE",
     "POTENTIAL TARGET", "neither creates a recommendation or changes BEST MOVES or the backend rank", "272 Yahoo O/OFS/NA players excluded"]) {
     assert.ok(html.includes(text), text);
@@ -498,8 +550,9 @@ test("full waiver list starts collapsed, keeps backend rank order and filters by
   const empty = render(FullWaiverList, { board: { ...board(null), decision_support: decisionSupport({ options: [] }) }, onDetails() {} });
   assert.match(empty, /No available or availability-unverified players can be listed/);
   const stale = render(FullWaiverList, { board: staleBoard(), onDetails() {} });
-  assert.match(stale, /Show all 2 players \(0 confirmed available · 2 availability unverified\)/);
-  assert.match(stale, /<span class="waiver-action is-potential_target">POTENTIAL TARGET<\/span>/);
+  assert.match(stale, /Show all 2 players \(0 unrostered in every current league roster · 2 availability unverified\)/);
+  assert.match(stale, /List group: POTENTIAL TARGET/);
+  assert.doesNotMatch(html + stale, /confirmed available/i, "unrostered players are never called confirmed available");
   assert.match(stale, /<span class="waiver-availability is-unverified">SAVED ROSTERS STALE — CHECK IN YAHOO<\/span>/);
   const rostered = render(FullWaiverList, { board: { ...board(null), decision_support: decisionSupport({ options: [
     ...decisionSupport().options, potential(43, "Rostered Elsewhere Guard", "ROSTERED_BY_OTHER_TEAM")] }) }, onDetails() {} });
@@ -567,17 +620,17 @@ test("compare a specific drop renders the backend order: a supported move before
     action_label: "ADD Supported Guard + DROP Bench Forward: Your roster is full.", evidence_blockers: [] });
   const watch = candidate(1, "Watch Center", drop(4, .847));
   const replacement = { ...board(4), candidates: [supported, watch], best_add_for_team_id: 3, top_measured_candidate_id: 1, selected_player_result: "ADD" };
-  const cards = (html) => [...html.matchAll(/<p class="waiver-kicker">Replacement option (\d)<\/p><h4>([^<]+)<\/h4><\/div><span class="waiver-decision[^"]*">([^<]+)<\/span>/g)]
+  const cards = (html) => [...html.matchAll(/<p class="waiver-kicker">Replacement option (\d)<\/p><h4>([^<]+)<\/h4><\/div><span class="waiver-verdict[^"]*">([^<]+)<\/span>/g)]
     .map(([, rank, name, decision]) => `${rank}. ${name}: ${decision}`);
   const html = render(Replacements, { board: replacement, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
-  assert.deepEqual(cards(html), ["1. Supported Guard: ADD", "2. Watch Center: WATCH"]);
+  assert.deepEqual(cards(html), ["1. Supported Guard: SUPPORTED ADD", "2. Watch Center: WATCH ONLY"]);
   assert.match(html, /Each comparison uses only the selected drop: Bench Forward\./);
   assert.equal(html.match(/<dt>Selected drop<\/dt><dd>Bench Forward<\/dd>/g).length, 2, "every card compares the same selected drop");
   assert.match(html, /Ordered by the backend: supported moves first, then WATCH, HOLD and insufficient evidence; within each group by measured net improvement\./);
   assert.match(html, /Top measured option: Watch Center/);
   // The page renders the backend order as received and never re-sorts by net.
   const asReceived = render(Replacements, { board: { ...replacement, candidates: [watch, supported] }, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
-  assert.deepEqual(cards(asReceived), ["1. Watch Center: WATCH", "2. Supported Guard: ADD"]);
+  assert.deepEqual(cards(asReceived), ["1. Watch Center: WATCH ONLY", "2. Supported Guard: SUPPORTED ADD"]);
   const stale = render(Replacements, { board: { ...replacement, model_version: "waiver-availability-phase5" }, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
   assert.match(stale, /Replacement evidence uses incompatible model waiver-availability-phase5/);
   assert.deepEqual(cards(stale), [], "a stale replacement response shows no option");
@@ -599,7 +652,7 @@ test("ADD + DROP impact stays fixed to the exact selected drop and never offers 
   assert.match(html, /Available Center: add\/drop analysis/);
   assert.match(html, /Selected drop comparison/);
   assert.match(html, /drop Weak Guard/);
-  assert.match(html, /starting-slot compatibility/i);
+  assert.match(html, /Starting slots:<\/strong> 3 → 3 of 2/);
   assert.doesNotMatch(html, /Compare dropping|selected-drop/);
   assert.match(source, /comparison: swap\.comparison/);
   assert.match(source, /selectedDropId=\{swap\.drop_player\.player_id\}/);
@@ -616,10 +669,10 @@ test("ADD ONLY best move is a focal card with no drop selector, fake drop or mod
   const { ImpactContent } = load();
   const html = moves(fillAnalysis([fill()]));
   assert.match(html, /BEST MOVES RIGHT NOW/);
-  assert.match(html, /<span class="waiver-action is-add_only">ADD ONLY<\/span><h3 class="waiver-move-player">Available Center<\/h3>/);
+  assert.match(html, /<div class="waiver-badges"><span class="waiver-action is-add_only">ADD ONLY<\/span> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/div><h3 class="waiver-move-player">Available Center<\/h3>/);
   assert.match(html, /Fills<\/dt><dd>C<\/dd>/);
   assert.match(html, /Drop<\/dt><dd>No drop required<\/dd>/);
-  assert.match(html, /Evidence<\/dt><dd>LIMITED<\/dd>/);
+  assert.match(html, /Production sample<\/dt><dd>Current-season sample: 9 games<\/dd>/);
   assert.match(html, /Fills the uncovered C starting slot/);
   assert.match(html, /CONFIRM IN YAHOO BEFORE ACTING/);
   assert.match(html, /View details: Available Center/);
@@ -642,7 +695,7 @@ test("MOVE TO IL, THEN ADD shows both steps and never calls the IL move a drop",
     label: "MOVE Injured Center TO IL, THEN ADD Available Center to cover C. Injured Center stays on your roster; this is not a drop.",
   });
   const html = moves(fillAnalysis([moveFill], { roster_capacity: capacity("MOVE_TO_IL_THEN_ADD") }));
-  assert.match(html, /<span class="waiver-action is-move_to_il_then_add">MOVE TO IL, THEN ADD<\/span><h3 class="waiver-move-player">Available Center<\/h3>/);
+  assert.match(html, /<div class="waiver-badges"><span class="waiver-action is-move_to_il_then_add">MOVE TO IL, THEN ADD<\/span> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/div><h3 class="waiver-move-player">Available Center<\/h3>/);
   assert.match(html, /<ol class="waiver-steps"><li>Move Injured Center from C to IL\. Injured Center stays on your roster; this is not a drop\.<\/li><li>Add Available Center to cover C\.<\/li><\/ol>/);
   assert.match(html, /Drop<\/dt><dd>No drop required/);
   assert.doesNotMatch(html, /DROP: Injured Center|drop Injured Center/);
@@ -657,7 +710,7 @@ test("two open spots show two distinct supported cards, or a best measured card 
   assert.match(html, /Fills<\/dt><dd>Depth \(bench\)<\/dd>/);
   const mixed = moves(fillAnalysis([fill()]), supportedBoard({ best_measured_ids: [21] }));
   assert.equal(mixed.match(/class="waiver-move-card is-supported"/g).length, 1);
-  assert.equal(mixed.match(/class="waiver-move-card is-measured"/g).length, 1);
+  assert.equal(mixed.match(/class="waiver-move-card is-measured is-cannot_evaluate"/g).length, 1, "a measured card carries its backend verdict, never the supported class");
   assert.ok(mixed.indexOf(">Available Center<") < mixed.indexOf(">Measured Guard<"), "supported moves stay first");
   assert.match(mixed, /Next open spot: no supported add yet/);
 });
@@ -692,9 +745,12 @@ test("WATCH and HOLD stay separate from actionable additions", () => {
   assert.doesNotMatch(html, /waiver-move-card|ADD ONLY<\/span>/);
   const options = render(OtherGoodOptions, { board: watchBoard, analysis: fillAnalysis([]), onDetails() {}, onAnalyzePair() {} });
   assert.match(options, /OTHER GOOD OPTIONS/);
-  for (const title of ["BEST GUARD", "BEST WING / FORWARD", "BEST CENTER", "BEST MULTI-POSITION OPTION", "BEST SHORT-TERM SCHEDULE", "BEST LONGER-TERM OPTION"]) {
+  // Titles come from the backend, qualified by each pick's verdict; "BEST GUARD" alone never appears.
+  for (const title of ["BEST AVAILABLE GUARD", "BEST AVAILABLE WING / FORWARD — cannot evaluate yet", "BEST AVAILABLE CENTER — cannot evaluate yet",
+    "BEST AVAILABLE MULTI-POSITION OPTION", "BEST AVAILABLE SHORT-TERM SCHEDULE OPTION", "BEST AVAILABLE LONGER-TERM OPTION"]) {
     assert.ok(options.includes(`<h3>${title}</h3>`), title);
   }
+  assert.doesNotMatch(options, /<h3>BEST (GUARD|CENTER|WING \/ FORWARD)<\/h3>/);
   assert.match(options, /<h3>WATCHLIST<\/h3>/);
   assert.match(options, /These are not add recommendations/);
   assert.match(options, /The best option here is already shown above: Measured Guard\./);
@@ -718,10 +774,10 @@ test("undetermined capacity with measurable players shows a BEST MEASURED OPTION
   });
   const html = moves(blocked, stale);
   assert.match(html, /No supported move yet: Your saved roster is from 2026-10-25/);
-  assert.match(html, /<span class="waiver-action is-best_measured_option">BEST MEASURED OPTION<\/span><h3 class="waiver-move-player">Measured Guard<\/h3>/);
+  assert.match(html, /<div class="waiver-badges"><span class="waiver-action is-best_measured_option">BEST MEASURED OPTION<\/span> <span class="waiver-verdict is-cannot_evaluate">CANNOT EVALUATE<\/span><\/div><h3 class="waiver-move-player">Measured Guard<\/h3>/);
   for (const text of [LABELS[UNROSTERED], "NOT YET A SUPPORTED ADD", `Yahoo status: <strong>UNKNOWN</strong>. ${BLANK}`,
     "Confirm in Yahoo:", "Free-agent or waiver state in Yahoo", "Current Yahoo status", "Whether you have an open roster spot",
-    "CHECK IN YAHOO", "Best measurable fit for", "PG / SG", "Why this is not a supported add (2)", "4 games in Rest of Week (stale schedule)"]) {
+    "CHECK IN YAHOO", "Position-eligible for", "PG / SG", "Why this is not a supported add (2)", "4 games in Rest of Week (stale schedule)"]) {
     assert.ok(html.includes(text), text);
   }
   assert.doesNotMatch(html, /is-add_only|ADD ONLY<|MUST ADD|STREAM|<h3>HOLD<\/h3>/);
@@ -886,11 +942,14 @@ test("WATCH swaps show the backend-named sample and status gates instead of a re
 test("full-roster supported transaction renders the exact add/drop pair with GET-only API", () => {
   const analysis = transactionAnalysis(true);
   const html = moves(analysis, pairBoard(analysis));
-  assert.match(html, /<span class="waiver-action is-add_drop">ADD \+ DROP<\/span><h3 class="waiver-move-player">ADD: Available Center<\/h3>/);
+  assert.match(html, /<div class="waiver-badges"><span class="waiver-action is-add_drop">ADD \+ DROP<\/span> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/div><h3 class="waiver-move-player">ADD: Available Center<\/h3>/);
   assert.match(html, /DROP: <strong>Bench Forward<\/strong>/);
   assert.match(html, /Drop<\/dt><dd>Required: your roster is full<\/dd>/);
   assert.match(html, /\(\+5\)/);
-  assert.match(html, /Starting-slot coverage/);
+  assert.match(html, /Starting slots<\/dt><dd>3 → 3 of 2 \(no fit change\)<\/dd>/);
+  assert.match(html, /Net \(exact pair\)<\/dt><dd>\+5\.00 index points<\/dd>/);
+  assert.match(html, /Roster fit: matched starting slots 3 to 3 of 2, \+5\.00 index points\. Net modeled change: \+5\.00\./);
+  assert.doesNotMatch(html, /Positive supported Yahoo-points roster-model change|Fills<\/dt><dd>C<\/dd>/, "no generic claim, no fills claim without a slot gain");
   assert.match(html, /Why a drop is required: All 13 non-injury roster spots are occupied/);
   assert.match(html, /View details: ADD Available Center \/ DROP Bench Forward/);
   assert.match(html, /CONFIRM IN YAHOO BEFORE ACTING/);
@@ -1143,7 +1202,7 @@ test("featured OTHER GOOD OPTIONS must be eligible too; a failed check withholds
   const result = { ...board(null), eligible_candidate_ids: [1, 3, 21, 23, 24, 25] };
   const html = render(OtherGoodOptions, { board: result, analysis: null, onDetails() {}, onAnalyzePair() {} });
   assert.match(html, /A recommendation for Group Wing was withheld because the player is not in the current waiver-eligible candidate set/);
-  const wing = html.slice(html.indexOf("<h3>BEST WING / FORWARD</h3>"), html.indexOf("<h3>BEST CENTER</h3>"));
+  const wing = html.slice(html.indexOf("<h3>BEST AVAILABLE WING / FORWARD — cannot evaluate yet</h3>"), html.indexOf("<h3>BEST AVAILABLE CENTER — cannot evaluate yet</h3>"));
   assert.match(wing, /Withheld: this option failed the waiver-eligibility check\./);
   assert.doesNotMatch(wing, /Group Wing/);
   assert.match(html, /Watch Center/);
@@ -1172,14 +1231,15 @@ const formWindow = (key, label, games, ppg, tweaks = {}) => ({
   starts: null, starts_detail: "Per-game starts are not persisted.", usage: null, usage_detail: "Game-level usage is not persisted.",
   sample_tier: games >= 7 ? "SUPPORTED" : games >= 5 ? "LIMITED" : "VERY_LOW", sample_label: `${games} games`,
   window_start: "2026-10-31", window_end: "2026-11-13", latest_game: "2026-11-13", season: null,
-  as_of: "2026-11-14T08:31:50Z", state: "available", detail: "Persisted NBA game logs.", ...tweaks,
+  as_of: "2026-11-14T08:31:50Z", state: "available", detail: "Persisted NBA game logs.", reason: null, reason_label: "", ...tweaks,
 });
 const recentForm = () => ({
   windows: [
     formWindow("LAST_7_DAYS", "Last 7 Days", 3, 33.1), formWindow("LAST_14_DAYS", "Last 14 Days", 6, 31.2),
     formWindow("LAST_30_DAYS", "Last 30 Days", 12, 27.9),
     formWindow("CURRENT_SEASON", "Current Season", 12, 27.9, { season: "2026-27", starts: 9, usage: .231, window_start: null, window_end: null }),
-    formWindow("PREVIOUS_SEASON", "Previous Season", 0, null, { season: "2025-26", state: "unavailable", window_start: null, window_end: null }),
+    formWindow("PREVIOUS_SEASON", "Previous Season", 0, null, { season: "2025-26", state: "unavailable", window_start: null, window_end: null,
+      reason: "NO_PREVIOUS_SEASON", reason_label: "No previous-season stats" }),
   ],
   trend: { trend: "IMPROVING", recent_games: 6, baseline_games: 6, recent_ppg: 31.2, baseline_ppg: 24.6, ppg_change: .268,
     recent_minutes: 30.1, baseline_minutes: 26.4, minutes_change: 3.7, detail: "Last 14 Days vs days 15-30: PPG +26.8%, minutes +3.7.",
@@ -1222,13 +1282,13 @@ test("a full-roster board/analysis pair mismatch fails closed, and a full roster
 test("supported cards carry the backend horizon intent and form lines; other actions get no intent badge", () => {
   const analysis = transactionAnalysis(true);
   analysis.best_transaction = { ...analysis.best_transaction, add_player: { ...analysis.best_transaction.add_player,
-    ...formed({ move_intent: "TWO_WEEK_STREAM", move_intent_detail: "Two-week move supported by current production, role, roster impact, and persisted Next 14 Days schedule evidence." }) } };
+    ...formed({ move_intent: "TWO_WEEK_STREAM", move_intent_detail: TWO_WEEK }) } };
   const html = moves(analysis, pairBoard(analysis), null, { mode: "next_14_days" });
   assert.match(html, /Next 14 Days · analysis only/);
-  assert.match(html, /<span class="waiver-action is-add_drop">ADD \+ DROP<\/span> <span class="waiver-intent is-two_week_stream">TWO-WEEK STREAM<\/span><h3/);
+  assert.match(html, /<div class="waiver-badges"><span class="waiver-action is-add_drop">ADD \+ DROP<\/span> <span class="waiver-intent is-two_week_stream">TWO-WEEK STREAM<\/span> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/div><h3/);
   assert.ok(html.includes(`<li>${TWO_WEEK}</li>`), "the backend Next 14 Days wording is rendered verbatim");
-  assert.match(html, /Add form \(Yahoo FP\/G\):<\/strong> L7 33\.1 \(3 g\) · L14 31\.2 \(6 g\) · L30 27\.9 \(12 g\) · Season 27\.9 \(12 g\) · IMPROVING/);
-  assert.doesNotMatch(html, /Drop form/, "no form line is invented for a drop without backend form");
+  assert.match(html, /Add recent form \(Yahoo FP\/G, look-back\):<\/strong> Last 7: 33\.1 \(3 g\) · Last 14: 31\.2 \(6 g\) · Last 30: 27\.9 \(12 g\) · Season: 27\.9 \(12 g\) · Trend: IMPROVING/);
+  assert.doesNotMatch(html, /Drop recent form/, "no form line is invented for a drop without backend form");
   const watch = { ...analysis, best_transaction: { ...analysis.best_transaction,
     add_player: { ...analysis.best_transaction.add_player, move_intent: "WATCH" } } };
   assert.doesNotMatch(moves(watch, pairBoard(watch)), /waiver-intent/);
@@ -1245,7 +1305,8 @@ test("details lead with the roster decision and show only backend form, season a
     evidence_blockers: [], schedule: { ...candidate(1, "x").schedule, next_14_days_games: 7, rest_of_season_games: 58 }, ...formed() });
   const html = render(ImpactContent, { impact: { model_version: VERSION, candidate: player, comparison: player.comparison, limitations: [] }, selectedDropId: null });
   assert.match(html, /<span class="waiver-intent is-stream">STREAM<\/span>/);
-  assert.match(html, /<h3>ROSTER DECISION<\/h3><dl class="waiver-move-facts"><div><dt>ADD<\/dt><dd>Available Center<\/dd><\/div><div><dt>DROP<\/dt><dd>Bench Forward<\/dd><\/div><div><dt>NET<\/dt><dd>\+0\.728 roster-index points<\/dd><\/div><\/dl><p><strong>WHY:<\/strong> STREAM: 4 games in Next 7 Days with a corroborated recent sample\.<\/p>/);
+  assert.match(html, /<h3>ROSTER DECISION<\/h3><dl class="waiver-move-facts"><div><dt>ADD<\/dt><dd>Available Center<\/dd><\/div><div><dt>DROP<\/dt><dd>Bench Forward<\/dd><\/div><div><dt>NET<\/dt><dd>\+0\.73 roster-index points<\/dd><\/div><div><dt>VERDICT<\/dt><dd><span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/dd><\/div><\/dl>/);
+  assert.match(html, /<p><strong>WHY:<\/strong> Roster fit: matched starting slots 3 to 3 of 2, \+0\.73 index points\. Net modeled change: \+0\.73\.<\/p>/, "the backend explanation, not a generic claim");
   const sections = ["ROSTER DECISION", "RECENT FORM", "SEASON EVIDENCE", "UPCOMING SCHEDULE", "Best supported drop for this add (roster full)"].map((text) => html.indexOf(text));
   assert.ok(sections.every((index) => index >= 0), String(sections));
   assert.deepEqual([...sections].sort((left, right) => left - right), sections, "the decision precedes the evidence");
@@ -1254,7 +1315,8 @@ test("details lead with the roster decision and show only backend form, season a
   assert.doesNotMatch(recent, /starts|usage/, "log windows never invent starts or usage");
   assert.match(html, /<strong>FORM: IMPROVING<\/strong> · Last 14 Days vs days 15-30: PPG \+26\.8%, minutes \+3\.7\./);
   assert.match(html, /<dt>CURRENT SEASON 2026-27<\/dt><dd>12 games · 27\.9 Yahoo FP\/G · 28\.4 MIN · median 29\.0 · 9 starts · 23\.1% usage<small>/);
-  assert.match(html, /<dt>PREVIOUS SEASON 2025-26<\/dt><dd>0 games · n\/a Yahoo FP\/G<small>/);
+  assert.match(html, /<dt>PREVIOUS SEASON 2025-26<\/dt><dd>0 games · No previous-season stats<small>/);
+  assert.doesNotMatch(html, /\bn\/a\b/, "a missing value shows its reason, never n/a");
   assert.match(html, /<dt>NEXT 14<\/dt><dd>7 games<\/dd>/);
   assert.match(html, /<dt>REST OF SEASON<\/dt><dd>58 persisted games<small>PARTIAL COVERAGE<\/small>/);
   assert.match(html, new RegExp(`<strong>Recent-sample gate:</strong> ${SAMPLE_DETAIL.replace(/[()]/g, "\\$&")}\\.`));
@@ -1294,9 +1356,225 @@ test("full-list exploratory sorts reorder by backend form numbers only and keep 
   const [byL14, l14Order] = sorted("last14");
   assert.deepEqual(l14Order, ["Group Wing", "Watch Forward", "Measured Guard", "Watch Center", "Unmeasured Rookie"], "missing form sorts last, then backend rank");
   assert.match(byL14, /<tr><td>2<\/td><th scope="row">Group Wing</, "the backend decision rank is still shown");
-  assert.match(byL14, /<td>36\.0 · 35\.0 · 34\.0 · 33\.0<small>STABLE<\/small><\/td>/);
+  assert.match(byL14, /<td>36\.0 · 35\.0 · 34\.0 · 33\.0<small>Trend: STABLE<\/small><\/td>/);
   assert.match(byL14, /<td>3 \/ 8<\/td>/);
   assert.match(byL14, /<td>Unavailable<small>No form evidence<\/small><\/td>/);
   assert.deepEqual(sorted("next14")[1], ["Group Wing", "Watch Forward", "Measured Guard", "Watch Center", "Unmeasured Rookie"]);
   assert.deepEqual(sorted("decision")[1], names, "default order is the backend decision_rank");
+});
+
+// -----------------------------------------------------------------------------------------------------------------
+// 2026-11-21 audit: decision integrity. Generic fixtures (no real player names); each case encodes one defect class.
+// -----------------------------------------------------------------------------------------------------------------
+const optionPair = (tweaks = {}) => ({
+  comparison_type: "ADD_DROP", drop_player_id: 4, drop_player_name: "Bench Forward", net: .412447,
+  add_ppg: 22.59, drop_ppg: 18.1, basis_label: "Last 14 days blended with 2025-26 (62% previous season)",
+  add_games: 3, drop_games: 2, window_points_gap: 31.57, starting_slots_before: 10, starting_slots_after: 10, starting_slots_required: 10,
+  statement: "Production: 22.6 vs 18.1 Yahoo FP/G, +0.30 index points. Net modeled change: +0.41.",
+  primary_reason: "Production: 22.6 vs 18.1 Yahoo FP/G, +0.30 index points", primary_tradeoff: "Opportunity: -0.05 index points",
+  blocker: null, consistent: true, near_tie: false,
+  alternatives: [
+    { player_id: 7, player_name: "Star Center", net: .67, margin: -.257553, consistent: false, near_tie: false, note: "schedule edge does not hold in Yahoo fantasy points" },
+    { player_id: 2, player_name: "Weak Guard", net: .2, margin: .212447, consistent: true, near_tie: false, note: "" },
+  ],
+  drop_choice: "Bench Forward (+0.41) is the best drop that clears every gate. Higher-index drops were not used: Star Center +0.67 (schedule edge does not hold in Yahoo fantasy points).",
+  ...tweaks,
+});
+const dimensions = (verdict, text) => [
+  { key: "PRODUCTION_SAMPLE", label: "PRODUCTION SAMPLE", state: "TOO_SMALL", text: "1-GAME SAMPLE — WATCH ONLY: 1 game in the last 14 days; 7+ needed (5-6 only when corroborated)", detail: "" },
+  { key: "CURRENT_ROLE", label: "CURRENT ROLE", state: "UNAVAILABLE", text: "Unavailable: no qualified role windows", detail: "" },
+  { key: "SCHEDULE", label: "SCHEDULE", state: "ROWS_PRESENT_PARTIAL", text: "3 games in Rest of Week: rows present, coverage partial (no completeness manifest)", detail: "" },
+  { key: "SOURCE_FRESHNESS", label: "SOURCE FRESHNESS", state: "CURRENT", text: "Current: production and Yahoo status", detail: "" },
+  { key: "TRANSACTION_VERDICT", label: "TRANSACTION VERDICT", state: verdict, text, detail: "" },
+];
+const fullRosterSupport = (edit) => {
+  const result = { ...board(null), roster_capacity: capacity("ADD_DROP") };
+  result.decision_support = decisionSupport({ options: decisionSupport().options.map((item) => edit(item) ?? item) });
+  return result;
+};
+const otherOptions = (result) => render(load().OtherGoodOptions, { board: result, analysis: null, onDetails() {}, onAnalyzePair() {} });
+const between = (html, start, end) => html.slice(html.indexOf(start), end ? html.indexOf(end) : undefined);
+// A refuted schedule claim: a +1.03 model net that trails in the window's Yahoo fantasy points.
+const refutedExplanation = () => explanation("Star Center", 1.026, {
+  horizon: "Rest of Season Outlook", window_start: "2026-11-21", window_end: "2027-04-12", drop_player_id: 7,
+  add_production: basis(22.59, { basis: "SEASON_EVIDENCE", label: "Season Evidence", math: "" }),
+  drop_production: basis(30.29, { basis: "SEASON_EVIDENCE", label: "Season Evidence", math: "" }),
+  production_gap: -7.7, add_games: 66, drop_games: 63, add_window_points: 1490.94, drop_window_points: 1908.27, window_points_gap: -417.33,
+  starting_slots_before: 10, starting_slots_after: 10, starting_slots_required: 10,
+  contributions: [
+    { component: "player_value", before: 61.2, after: 59.96, delta: -1.24, effective_weight: .25, weighted_contribution: -.31 },
+    { component: "schedule", before: 50.1, after: 59.0067, delta: 8.9067, effective_weight: .15, weighted_contribution: 1.336 },
+  ],
+  contribution_sum: 1.026, net: 1.026, favorable: ["schedule"], unfavorable: ["player_value"], compensating: ["schedule"],
+  refuted: { schedule: "66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 window Yahoo fantasy points: the extra games do not offset the lower production" },
+  net_without: { schedule: -.3647 }, reconciled_net: -.3647, near_tie: false, consistent: false,
+  checks: [
+    { key: "ARITHMETIC", passed: true, detail: "Weighted contributions sum to 1.026; returned net 1.026." },
+    { key: "COMPENSATION", passed: false, detail: "schedule: 66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 window Yahoo fantasy points: the extra games do not offset the lower production. Without the unsupported claim the net is -0.3647." },
+    { key: "NEAR_TIE", passed: true, detail: "Net -0.364700 after removing the unsupported claim is outside the 0.005 near-tie band." },
+  ],
+  statement: "Not supported: the +1.03 index change depends on a claim that does not hold — 66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 window Yahoo fantasy points: the extra games do not offset the lower production. Without it the net is -0.36.",
+  primary_reason: "No component improves the roster index.", tradeoffs: ["Production cost: 22.6 vs 30.3 Yahoo FP/G, -0.31 index points."],
+  primary_tradeoff: "Production cost: 22.6 vs 30.3 Yahoo FP/G, -0.31 index points.",
+  blocker: "Explanation gate: schedule: 66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 window Yahoo fantasy points: the extra games do not offset the lower production. Without the unsupported claim the net is -0.3647.",
+});
+const replacementBoard = (row) => ({ ...board(7), candidates: [row], top_measured_candidate_id: null, selected_player_result: "Keep: no supported replacement" });
+const replacement = (verdict, net, explained, tweaks = {}) => candidate(1, "Available Center", { ...drop(4, net), player_id: 7, player_name: "Star Center", explanation: explained },
+  { verdict, recommended_action: "INSUFFICIENT EVIDENCE", recommended_action_type: "INSUFFICIENT_EVIDENCE", action_label: "", ...tweaks });
+
+test("full-roster OTHER GOOD OPTIONS name the exact drop on one basis, or say there is no supported drop", () => {
+  const result = fullRosterSupport((item) => item.player_id === 22
+    ? { ...item, verdict: "WATCH_ONLY", headline: "WATCH ONLY — Group Wing / drop Bench Forward, net +0.41, blocked by: 1 game in the last 14 days.",
+      pair: optionPair({ blocker: "Sample gate: Group Wing 1 game in the last 14 days." }) }
+    : item.player_id === 23 ? { ...item, pair: null, blockers: ["Sample gate: Watch Center 0 games this season.", ...item.blockers] } : null);
+  const html = otherOptions(result);
+  assert.match(html, /CANNOT EVALUATE, with the exact drop\. &quot;Best&quot; never means supported unless the card says SUPPORTED ADD\./);
+  const wing = between(html, "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
+  assert.match(wing, /<dt>Best compatible drop \(comparison only\)<\/dt><dd>Bench Forward<\/dd>/, "a non-supported card never presents its drop as advice");
+  assert.match(wing, /<dt>Net \(exact pair\)<\/dt><dd>\+0\.41 index points<\/dd>/);
+  assert.match(wing, /<dt>Yahoo FP\/G \(same basis\)<\/dt><dd>Add 22\.6 · drop 18\.1<small>Last 14 days blended with 2025-26 \(62% previous season\)<\/small>/);
+  assert.match(wing, /<dt>Games in Rest of Week<\/dt><dd>3 vs 2 · window FP \+31\.6<\/dd>/);
+  assert.match(wing, /<dt>Need \/ fit change<\/dt><dd>Starting slots 10 → 10 of 10 \(no fit change\)<\/dd>/);
+  assert.match(wing, /<strong>Primary blocker:<\/strong> Sample gate: Group Wing 1 game in the last 14 days\./);
+  assert.match(wing, /<summary>Why this drop\?<\/summary><p>Bench Forward \(\+0\.41\) is the best drop that clears every gate\./);
+  assert.match(wing, /<li>Star Center: \+0\.67 index points \(0\.26 ahead on the index\) — not used: schedule edge does not hold in Yahoo fantasy points<\/li>/);
+  assert.match(wing, /Compare other drops: Group Wing/);
+  const center = between(html, "<h3>BEST AVAILABLE CENTER", "<h3>BEST AVAILABLE MULTI-POSITION");
+  assert.match(center, /<strong>No supported drop:<\/strong> Sample gate: Watch Center 0 games this season\./);
+  assert.doesNotMatch(html, /Which roster player you would drop|<dt>Fills<\/dt>/, "a full-roster option never leaves the drop to the user or claims a fill without a slot gain");
+  assert.doesNotMatch(html, /<dt>RECENT FORM<\/dt><dd><\/dd>/, "a missing form says so instead of an empty cell");
+});
+
+test("every evidence label names its dimension, and a 1-game sample is called out", () => {
+  const result = fullRosterSupport((item) => item.player_id === 22 ? { ...item, verdict: "WATCH_ONLY", current_season_games: 1,
+    pair: optionPair(), evidence_dimensions: dimensions("WATCH_ONLY", "WATCH ONLY — Group Wing / drop Bench Forward, net +0.41.") } : null);
+  const wing = between(otherOptions(result), "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
+  assert.match(wing, /<p class="waiver-sample-alert">1-GAME SAMPLE — WATCH ONLY<\/p>/);
+  for (const [name, text] of [["PRODUCTION SAMPLE", "1-GAME SAMPLE — WATCH ONLY: 1 game in the last 14 days"], ["CURRENT ROLE", "Unavailable: no qualified role windows"],
+    ["SCHEDULE", "3 games in Rest of Week: rows present, coverage partial"], ["SOURCE FRESHNESS", "Current: production and Yahoo status"],
+    ["TRANSACTION VERDICT", "WATCH ONLY — Group Wing / drop Bench Forward"]]) {
+    assert.ok(wing.includes(`<dt>${name}</dt><dd>${text}`), name);
+  }
+  assert.doesNotMatch(wing, /INSUFFICIENT FOR STRONG RECOMMENDATION/, "no bare label from another label system");
+});
+
+test("WATCH ONLY, NEAR TIE and DO NOT ADD are visually distinct from a supported add", () => {
+  const verdicts = { 22: "WATCH_ONLY", 23: "NEAR_TIE", 24: "DO_NOT_ADD" };
+  const result = fullRosterSupport((item) => verdicts[item.player_id] ? { ...item, verdict: verdicts[item.player_id], pair: optionPair() } : null);
+  result.decision_support.watch_ids = [22, 23, 24];
+  const html = otherOptions(result);
+  const watchlist = between(html, "<h3>WATCHLIST</h3>");
+  for (const [className, text] of [["is-watch_only", "WATCH ONLY"], ["is-near_tie", "NEAR TIE — NO STRONG PREFERENCE"], ["is-do_not_add", "DO NOT ADD"]]) {
+    assert.ok(watchlist.includes(`<span class="waiver-verdict ${className}">${text}</span>`), className);
+    assert.ok(watchlist.includes(`<div class="waiver-option ${className}">`), `${className} card class`);
+  }
+  assert.doesNotMatch(watchlist, /is-supported/, "no supported styling on a non-supported verdict");
+  const rule = (name) => css.match(new RegExp(`\\.waiver-verdict\\.${name} \\{([^}]+)\\}`))?.[1];
+  const supported = rule("is-supported_add");
+  for (const name of ["is-watch_only", "is-near_tie", "is-do_not_add", "is-cannot_evaluate"]) {
+    assert.ok(rule(name) && rule(name) !== supported, `${name} has its own style`);
+  }
+});
+
+test("a missing form value shows its backend reason, never n/a", () => {
+  const form = { last_7_ppg: null, last_7_games: 0, last_7_reason: "No games played in window", last_14_ppg: 31.2, last_14_games: 6, last_14_reason: null,
+    last_30_ppg: 27.9, last_30_games: 12, last_30_reason: null, season_ppg: 27.9, season_games: 12, season_reason: null,
+    previous_season_ppg: null, previous_season_games: 0, previous_season_reason: "No previous-season stats", trend: "INSUFFICIENT EVIDENCE", next_7_games: 3, next_14_games: 7 };
+  const result = fullRosterSupport((item) => item.player_id === 22 ? { ...item, form, pair: optionPair() } : null);
+  const wing = between(otherOptions(result), "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
+  assert.match(wing, /Last 7: No games played in window \(0 g\) · Last 14: 31\.2 \(6 g\)/);
+  assert.match(wing, /Trend: not enough games \(3\+ on each side of the 14-day split\)/);
+  assert.match(wing, /<dt>PREVIOUS-SEASON BASELINE<\/dt><dd>No previous-season stats · 0 games<\/dd>/);
+  assert.match(wing, /<dt>CURRENT-SEASON PRODUCTION<\/dt><dd>27\.9 Yahoo FP\/G · 12 games<\/dd>/);
+  assert.doesNotMatch(wing, /\bn\/a\b/i);
+});
+
+test("the exact calculation lists gains and costs that sum to the net, both production bases and the window check", () => {
+  const explained = explanation("Bench Forward", .25, {
+    drop_player_id: 4, add_production: basis(20), drop_production: basis(24), production_gap: -4,
+    add_games: 4, drop_games: 3, add_window_points: 80, drop_window_points: 72, window_points_gap: 8,
+    contributions: [
+      { component: "player_value", before: 61.2, after: 60.4, delta: -.8, effective_weight: .25, weighted_contribution: -.2 },
+      { component: "schedule", before: 50, after: 53, delta: 3, effective_weight: .15, weighted_contribution: .45 },
+    ],
+    contribution_sum: .25, favorable: ["schedule"], unfavorable: ["player_value"], compensating: ["schedule"], net_without: { schedule: -.2353 },
+    checks: [{ key: "ARITHMETIC", passed: true, detail: "Weighted contributions sum to 0.25; returned net 0.25." },
+      { key: "COMPENSATION", passed: true, detail: "Every compensating claim holds in Yahoo fantasy points." }],
+  });
+  const player = candidate(1, "Available Center", { ...drop(4, .25), explanation: explained }, { recommended_action: "ADD", recommended_action_type: "ADD_DROP", evidence_blockers: [] });
+  const html = render(load().ImpactContent, { impact: { model_version: VERSION, candidate: player, comparison: player.comparison, limitations: [] }, selectedDropId: null });
+  assert.match(html, /<tr class="is-cost"><th scope="row">player value<\/th><td>61\.2000<\/td><td>60\.4000<\/td><td>-0\.8000<\/td><td>25\.00%<\/td><td>-0\.200000<\/td><\/tr>/);
+  assert.match(html, /<tr class="is-gain"><th scope="row">schedule<\/th><td>50\.0000<\/td><td>53\.0000<\/td><td>\+3\.0000<\/td><td>15\.00%<\/td><td>\+0\.450000<\/td><\/tr>/);
+  assert.match(html, /<th scope="row">Sum = net<\/th><td colSpan="4">Returned net \+0\.250000<\/td><td>\+0\.250000<\/td>/);
+  assert.match(html, /<strong>Available Center:<\/strong> 20\.00 Yahoo FP\/G · Last 14 days blended with 2025-26 \(83% previous season\): mostly previous-season evidence · 0\.167 \(2\/12\) x 18\.00 last 14 days \(2 games\) \+ 0\.833 \(10\/12\) x 20\.40 2025-26 \(60 games\) = 20\.00/);
+  assert.match(html, /<strong>Bench Forward:<\/strong> 24\.00 Yahoo FP\/G · Last 14 days blended/);
+  assert.match(html, /Window Yahoo fantasy points \(games × FP\/G, before daily lineup limits\): 80\.0 vs 72\.0 \(\+8\.0\)\./);
+  assert.match(html, /Would it still win without…<\/strong> schedule: -0\.2353/);
+  assert.match(html, /PASS · COMPENSATION:<\/strong> Every compensating claim holds in Yahoo fantasy points\./);
+  assert.doesNotMatch(html, /coverage partial\)/, "the explanation never asserts a coverage state it did not measure");
+});
+
+test("a positive net whose compensating claim fails is DO NOT ADD with the failed check, never a positive change", () => {
+  const row = replacement("DO_NOT_ADD", 1.026, refutedExplanation(), {
+    verdict_text: "DO NOT ADD — Available Center / drop Star Center shows +1.03 index points, but Not supported: the +1.03 index change depends on a claim that does not hold.",
+    evidence_blockers: [refutedExplanation().blocker] });
+  const html = render(load().Replacements, { board: replacementBoard(row), loading: false, error: "", selectedDropId: 7, onAnalyze() {} });
+  assert.match(html, /<span class="waiver-verdict is-do_not_add">DO NOT ADD<\/span>/);
+  assert.match(html, /<strong>Positive index change not supported\.<\/strong> Explanation gate: schedule: 66 x 22\.6 = 1490\.9 vs 63 x 30\.3 = 1908\.3/);
+  assert.match(html, /<strong>Why:<\/strong> Not supported: the \+1\.03 index change depends on a claim that does not hold/);
+  assert.match(html, /<li class="is-failed"><strong>FAIL · COMPENSATION:<\/strong>/);
+  assert.match(html, /Window Yahoo fantasy points \(games × FP\/G, before daily lineup limits\): 1490\.9 vs 1908\.3 \(-417\.3\)\./);
+  assert.doesNotMatch(html, /Positive measured roster-index change|is-supported_add/);
+  const impact = render(load().ImpactContent, { impact: { model_version: VERSION, candidate: row, comparison: row.comparison, limitations: [] }, selectedDropId: 7 });
+  assert.match(impact, /<dt>VERDICT<\/dt><dd><span class="waiver-verdict is-do_not_add">DO NOT ADD<\/span><\/dd>/);
+  assert.match(impact, /<strong>BLOCKERS:<\/strong><\/p><ul><li>Explanation gate: schedule:/);
+});
+
+test("a near tie is labeled NEAR TIE with its exact net, never as an improvement", () => {
+  const tie = explanation("Star Center", .00129, { drop_player_id: 7, near_tie: true, consistent: false,
+    checks: [{ key: "NEAR_TIE", passed: false, detail: "Net +0.001290 rounds to +0.00 at the displayed precision: no strong preference." }],
+    statement: "NEAR TIE — NO STRONG PREFERENCE: net +0.0013 rounds to +0.00 index points.",
+    blocker: "Near-tie gate: Net +0.001290 rounds to +0.00 at the displayed precision: no strong preference." });
+  const row = replacement("NEAR_TIE", .00129, tie, { verdict_text: "NEAR TIE — NO STRONG PREFERENCE. Best measured comparison: Available Center / drop Star Center, net +0.0013 (rounds to +0.00)." });
+  const html = render(load().Replacements, { board: replacementBoard(row), loading: false, error: "", selectedDropId: 7, onAnalyze() {} });
+  assert.match(html, /<span class="waiver-verdict is-near_tie">NEAR TIE — NO STRONG PREFERENCE<\/span>/);
+  assert.match(html, /net \+0\.0013 \(rounds to \+0\.00\)/);
+  assert.match(html, /<dt>Net improvement<\/dt><dd>\+0\.0013 index points<\/dd>/, "a tiny net keeps its sign and size instead of +0.00");
+  assert.match(html, /<strong>Near tie — no strong preference\.<\/strong> Near-tie gate:/);
+  assert.doesNotMatch(html, /Positive measured roster-index change|is-supported_add/);
+});
+
+test("a featured supported card whose backend verdict is not SUPPORTED ADD fails closed", () => {
+  const analysis = transactionAnalysis(true);
+  analysis.best_transaction = { ...analysis.best_transaction, add_player: { ...analysis.best_transaction.add_player, verdict: "WATCH_ONLY" } };
+  const html = moves(analysis, pairBoard(analysis));
+  assert.match(html, /A recommendation for Available Center \/ Bench Forward was withheld because its backend verdict is WATCH ONLY, not SUPPORTED ADD\./);
+  assert.doesNotMatch(html, /waiver-move-card|Best move now/);
+  const result = fillAnalysis([fill(1, "Available Center", { add_player: { ...fill().add_player, verdict: "DO_NOT_ADD" } })]);
+  const fills = moves(result);
+  assert.match(fills, /withheld because its backend verdict is DO NOT ADD, not SUPPORTED ADD/);
+  assert.doesNotMatch(fills, /waiver-move-card/);
+});
+
+test("roster drop labels say whether a supported, watch-only or no replacement exists", () => {
+  const players = [["review_replacement", "Supported replacement exists"], ["watch_replacement", "Watch only: positive but unsupported replacements"],
+    ["keep_on_measured_model", "Keep: no supported replacement"], ["unavailable", "Cannot evaluate: no measured comparison"]]
+    .map(([decision], index) => candidate(60 + index, `Roster Player ${index}`, null, { ...MANAGER, roster_decision: decision }));
+  const html = render(load().CompareDropSection, { board: { ...board(null), roster: players, roster_capacity: capacity("ADD_DROP") },
+    selectedDropId: null, onSelect() {}, replacementBoard: null, loading: false, error: "", onAnalyze() {} });
+  for (const text of ["Supported replacement exists", "Watch only: positive but unsupported replacements", "Keep: no supported replacement", "Cannot evaluate: no measured comparison"]) {
+    assert.ok(html.includes(`<span class="waiver-roster-evidence">${text}<br/>`), text);
+  }
+  assert.doesNotMatch(html, /waiver-roster-evidence">unavailable</, "no bare 'unavailable' roster label");
+});
+
+test("the best move lists every backend tradeoff, including a fragile window edge and drop permanence", () => {
+  const analysis = transactionAnalysis(true);
+  const tradeoffs = ["FRAGILE: the window edge is +2.4 Yahoo fantasy points, less than one Available Center game (23.1); one missed game reverses it.",
+    "Dropping is permanent: Bench Forward has 30.3 current-season Yahoo FP/G vs 20.2 for Available Center; this comparison covers only Next 14 Days."];
+  const comparison = { ...analysis.best_transaction.comparison, explanation: { ...analysis.best_transaction.comparison.explanation, tradeoffs, primary_tradeoff: tradeoffs[0], fragile: true } };
+  analysis.best_transaction = { ...analysis.best_transaction, comparison };
+  const html = moves(analysis, pairBoard(analysis));
+  assert.ok(html.includes(`<div class="waiver-tradeoff"><strong>Tradeoffs:</strong><ul><li>${tradeoffs[0]}</li><li>${tradeoffs[1]}</li></ul></div>`),
+    "both tradeoffs are on the card, not only the first");
 });

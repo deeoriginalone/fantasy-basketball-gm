@@ -1,4 +1,65 @@
-# CURRENT STATE — Waiver Heavy-Read Admission Fix — API-Only Deployment Verified — 2026-11-15
+# CURRENT STATE — Waiver Decision-Integrity Audit — Implemented and Validated Locally, NOT Deployed — 2026-11-21
+
+**STATUS: LOCAL WORKTREE ONLY (2026-11-21, uncommitted). NOTHING DEPLOYED.**
+
+The deployed application is unchanged since 2026-11-15: model
+`waiver-horizon-evidence-phase6` plus the heavy-read admission fix (section
+below). The live page therefore still features the pre-audit answers,
+including **ADD Isaiah Jackson / DROP Jarrett Allen (+1.03)** in Rest of
+Season Outlook. This audit proved that pair is not supported, but the live
+page will show it until phase 7 is deployed.
+
+Model `waiver-decision-integrity-phase7` exists only in the worktree, on top
+of `2d48784`, uncommitted. No migration is needed. See the
+[2026-11-21 session record](../sessions/2026-11-21.md) and
+`qa-work/2026-11-21-waiver-audit/` (findings matrix, before/after traces,
+acceptance and screenshots).
+
+### What changed (worktree)
+
+- **Explanation-consistency gate.** When an add loses measured production,
+  the positive net must not rest on a claim that fails in the league's own
+  scoring unit:
+  - schedule: window Yahoo points = games × the same-basis FP/G;
+  - fit: requires a starting-slot gain;
+  - opportunity: never reconcilable.
+
+  A refuted pair is DO NOT ADD on every surface. Weights, thresholds and
+  gates are otherwise unchanged; there are no player-specific rules.
+- **Per-pair explanation** with exact contributions, both players' production
+  basis and blend math, window points, checks and tradeoffs (FRAGILE,
+  PRIOR-SEASON DRIVEN, drop permanence).
+- **Transaction verdicts:** SUPPORTED ADD, WATCH ONLY, NEAR TIE, DO NOT ADD,
+  CANNOT EVALUATE.
+- **OTHER GOOD OPTIONS:** an exact drop (or "No supported drop") and a
+  verdict on every card.
+- **Labels:** evidence by dimension, form reasons instead of "n/a", lineup
+  gaps in dates, and distinct roster labels.
+
+### Read-only acceptance on the 09:37 UTC snapshot (new code, not live)
+
+| Horizon | Live (phase 6) | Worktree (phase 7) |
+|---|---|---|
+| Rest of Week | DeRozan / Dunn +0.589 | Same pair, SUPPORTED ADD; flagged PRIOR-SEASON DRIVEN and drop-permanent |
+| Next 7 Days | Keldon Johnson / Jarrett Allen +0.566 STREAM | Same; window check +28.6 FP; drop permanence shown |
+| Next 14 Days | Keldon Johnson / Jarrett Allen +0.567 STREAM | Same; **FRAGILE** (+2.4 FP, less than one game) |
+| Rest of Season Outlook | Isaiah Jackson / Jarrett Allen +1.026 ADD | **Isaiah Jackson / Kevin Huerter +0.412 ADD**; Jackson/Allen is DO NOT ADD (−0.39 without the refuted schedule claim) |
+
+- Supported positive moves: 24 → 24, 42 → 39, 40 → 12 and 124 → 4.
+- Board = optimizer = replacements = impact (with and without the drop),
+  including the explanation, in all four horizons.
+- The read runs were SELECT only, with no provider call or write.
+
+### Validation (disposable infrastructure)
+
+- **Backend:** waiver files 307 → 320 passed; full suite 471 → 484.
+- **Frontend unit:** 63 → 73 passed.
+- **Desktop Playwright** (1440 × 1000, one worker): 22 → 23 passed.
+- **Build:** `npm run build` passes.
+- **Real payloads rendered offline:** 4/4.
+- **New tests fail on `2d48784`** for the defect they encode.
+
+# Waiver Heavy-Read Admission Fix — API-Only Deployment Verified — 2026-11-15
 
 **STATUS: DEPLOYED AND VERIFIED (2026-11-15 14:50 UTC; 06:50 PST).** The
 validated heavy-read admission fix (`admission.py` and its `router.py`

@@ -147,6 +147,75 @@
 
 ## Waiver Center Invariants
 
+- **Phase 7: decision integrity** (model `waiver-decision-integrity-phase7`;
+  implemented and validated locally on 2026-11-21, **NOT deployed**; no
+  migration). See `docs/sessions/2026-11-21.md`.
+  - **Explanations.** Every measured comparison carries a backend
+    `PairExplanation`:
+    - contributions summing to the net within 1e-5;
+    - both players' production basis and blend math;
+    - games and window Yahoo points;
+    - the checks ARITHMETIC, CLAIMS_MEASURED, COMPENSATION and NEAR_TIE;
+    - the reconciled net, the statement and the tradeoffs.
+
+    Board, optimizer, replacements and impact carry the identical
+    explanation; the identity test covers it.
+  - **Explanation-consistency gate** (`explanation.py`; no tunable
+    parameter). When the add's production contribution is negative, every
+    favorable compensator must reconcile:
+    - schedule iff add games × add FP/G ≥ drop games × drop FP/G (same
+      basis, same window);
+    - roster fit only with a starting-slot gain;
+    - opportunity never.
+
+    Refuted claims are dropped and the net renormalized (the reconciled
+    net). A positive net whose reconciled net is below 0.005 fails closed on
+    every surface: INSUFFICIENT EVIDENCE, verdict DO NOT ADD, and an
+    "Explanation-consistency gate: …" blocker that the optimizer counts.
+    PASS ⇒ net ≤ 0 still holds.
+  - **NEAR TIE** when |reconciled net| < 0.005: half the 2-decimal display
+    unit, far above the 1e-5 calculation tolerance. Nets display at 2
+    decimals; a non-zero net that would print as ±0.00 shows 4.
+  - **Flags never change a decision:**
+    - FRAGILE: schedule-compensated, and the window edge is under one add
+      game;
+    - PRIOR-SEASON DRIVEN: the weekly blend, where the add trails on raw last
+      14 days and the current season;
+    - "Dropping is permanent": a short horizon where the drop has the higher
+      current-season FP/G.
+  - **Text** names only components in the common mask with a positive
+    weighted contribution, names costs as costs, and states why a component
+    is omitted (for example Rest of Week schedule). Move-intent detail comes
+    from the explanation, not static wording.
+  - **Verdicts:**
+    - SUPPORTED ADD: every supported action type;
+    - NEAR TIE;
+    - WATCH ONLY;
+    - DO NOT ADD: refuted or HOLD;
+    - CANNOT EVALUATE.
+
+    A featured supported card whose verdict is not SUPPORTED ADD fails closed
+    with a contract error. Non-supported verdicts never use the supported
+    style.
+  - **OTHER GOOD OPTIONS:**
+    - the pool is other supported candidates + the comparable pool
+      (including HOLD) + WATCH;
+    - ordering is verdict first;
+    - a pick's title is qualified by its verdict; an empty group is "BEST
+      AVAILABLE {noun}";
+    - every pick carries `pair`: the best compatible drop ("(comparison
+      only)" unless supported), net, same-basis FP/G, games, window points,
+      slots, reason, blocker or tradeoff, alternatives and "Why this drop?".
+    - `confirm` never asks which player to drop.
+  - **Labels:**
+    - evidence labels always name their dimension (PRODUCTION SAMPLE, CURRENT
+      ROLE, SCHEDULE, SOURCE FRESHNESS, TRANSACTION VERDICT);
+    - a missing form value carries a reason code, never "n/a";
+    - lineup gaps count dates, with slot-games reported separately;
+    - roster labels: `review_replacement` (supported), `watch_replacement`,
+      `keep_on_measured_model`, `unavailable` (no measured comparison).
+  - **No player-specific rules** in decision modules; a guard test scans
+    them for names.
 - **Phase 6: horizons and evidence** (model `waiver-horizon-evidence-phase6`;
   **deployed** 2026-11-14 21:30 UTC, application-only with no migration or
   refresh; rollback images tagged `pre-phase6`; it carries the NO CURRENT

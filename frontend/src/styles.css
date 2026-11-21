@@ -768,3 +768,47 @@ h1, h2, p { margin-top: 0; }
   .waiver-refresh-actions, .waiver-failure-actions { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
   .waiver-refresh-stages li { grid-template-columns: minmax(0, 1fr); }
 }
+/* Decision integrity (2026-11-21): verdicts, labeled evidence, exact arithmetic. WATCH / NEAR TIE / DO NOT ADD never
+   share the supported-add styling. */
+.waiver-verdict { display: inline-block; border: 2px solid currentColor; border-radius: 4px; padding: 3px 8px; font-size: .76rem; font-weight: 900; letter-spacing: .04em; white-space: nowrap; }
+.waiver-verdict.is-supported_add { color: #ffffff; background: #1f6b4f; border-color: #1f6b4f; }
+.waiver-verdict.is-watch_only { color: #4d4000; background: #fff1ae; border-style: dashed; }
+.waiver-verdict.is-near_tie { color: #23313a; background: #e3e9ee; border-style: dotted; }
+.waiver-verdict.is-do_not_add { color: #7a1010; background: #fde2e2; }
+.waiver-verdict.is-cannot_evaluate { color: #5e2800; background: #ffe1b4; border-style: dotted; }
+.waiver-option.is-watch_only, .waiver-option-card.is-watch_only { border-style: dashed; }
+.waiver-option.is-do_not_add .waiver-option-headline, .waiver-option.is-near_tie .waiver-option-headline { color: #4a5560; }
+.waiver-option-card.is-supported_add { border: 2px solid #1f6b4f; }
+/* The tinted background needs a darker muted text color to keep 4.5:1 contrast (#59645f on #f6f7f8 is about 5.7:1). */
+.waiver-option-card.is-do_not_add, .waiver-option-card.is-near_tie, .waiver-option-card.is-cannot_evaluate { background: #f6f7f8; --muted: #59645f; }
+.waiver-move-card.is-measured.is-watch_only { border-style: dashed; }
+.waiver-option-headline { margin: 6px 0 8px; font-weight: 700; overflow-wrap: anywhere; }
+.waiver-sample-alert { display: inline-block; margin: 4px 0 8px; padding: 4px 10px; border: 2px solid #b45309; border-radius: 4px; color: #5e2800; background: #ffe1b4; font-weight: 900; letter-spacing: .04em; }
+.waiver-tradeoff { margin: 8px 0; padding: 8px 10px; border-left: 4px solid #417a9e; border-radius: 4px; background: #eef5fb; overflow-wrap: anywhere; }
+.waiver-tradeoff.is-blocker { border-left-color: #b45309; background: #fff4e5; }
+.waiver-pair-facts dd small, .waiver-move-facts dd small { display: block; color: var(--muted, #687570); font-weight: 500; font-size: .78rem; }
+.waiver-dimensions { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 6px 12px; margin: 10px 0; padding: 8px 10px; border: 1px solid var(--line, #c9d1d6); border-radius: 6px; }
+.waiver-dimensions > div { min-width: 0; }
+.waiver-dimensions dt { color: var(--muted, #687570); font-size: .72rem; font-weight: 900; letter-spacing: .05em; }
+.waiver-dimensions dd { margin: 2px 0 0; font-size: .86rem; overflow-wrap: anywhere; }
+.waiver-production { display: grid; gap: 4px; margin: 8px 0; }
+.waiver-production > div { min-width: 0; display: grid; grid-template-columns: minmax(0, 13rem) minmax(0, 1fr); gap: 8px; }
+.waiver-production dt { color: var(--muted, #687570); font-size: .72rem; font-weight: 900; letter-spacing: .05em; }
+.waiver-production dd { margin: 0; font-size: .86rem; overflow-wrap: anywhere; }
+.waiver-production dd small { display: block; color: var(--muted, #687570); }
+.waiver-production .waiver-form-line { margin: 0; }
+.waiver-explanation { min-width: 0; }
+.waiver-explanation h5 { margin: 10px 0 4px; }
+.waiver-contrib-table { border-collapse: collapse; font-size: .84rem; }
+.waiver-contrib-table caption { text-align: left; padding-bottom: 4px; }
+.waiver-contrib-table th, .waiver-contrib-table td { padding: 4px 8px; border-bottom: 1px solid var(--line, #c9d1d6); text-align: right; white-space: nowrap; }
+.waiver-contrib-table th[scope="row"] { text-align: left; }
+.waiver-contrib-table tr.is-gain td:last-child { color: #1f6b4f; font-weight: 800; }
+.waiver-contrib-table tr.is-cost td:last-child { color: #9b1c1c; font-weight: 800; }
+.waiver-checks .is-failed { color: #9b1c1c; }
+.waiver-why-drop { margin: 8px 0; }
+.waiver-why-drop summary { cursor: pointer; font-weight: 700; }
+/* Action, intent and verdict badges share one row so the card header stays compact. */
+.waiver-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.waiver-option-reason { margin: 0 0 8px; font-size: .86rem; overflow-wrap: anywhere; }
+.waiver-tradeoff ul { margin: 4px 0 0; padding-left: 18px; }
