@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-const VERSION = "waiver-decision-integrity-phase7";
+const VERSION = "waiver-decision-integrity-phase7.1";
 type Scenario = "add_only" | "move" | "two" | "full" | "hold_watch" | "undetermined" | "stale" | "unavailable";
 
 const evidence = { state: "partial", source: "Persisted NBA", as_of: "2026-10-25T00:00:00Z", detail: "Partial schedule and coverage." };
@@ -347,6 +347,10 @@ const board = (mode = "this_week", dropId: number | null = null, order = [1, 3])
   waiver_rules: ["Continual rolling list", "2-day waiver period", "4 adds/week", "Daily - Today deadline"],
   selected_player_result: "WATCH",
   candidates: shapes[scenario] === "UNDETERMINED" && dropId === null ? [] : candidatesFor(mode, dropId, order),
+  // The backend's gated answer for an explicitly selected drop (null without one).
+  drop_summary: dropId === null ? null : { drop_player_id: dropId, drop_player_name: dropId === 2 ? "Weak Guard" : "Bench Forward",
+    decision: "watch_replacement", result: "WATCH", headline: `WATCH ONLY — ${order[0] === 1 ? "Available Center" : "Overall Guard"}.`,
+    best_valid_replacement_id: null, watch_candidate_id: order[0], highest_raw_comparison: null },
   excluded_count: 2, unknown_availability_count: 1, limitations: ["No projections."],
   data_quality: { roster: { ...evidence, state: "available", detail: "Fresh roster." } },
   coverage, data_gaps: [], recommended_action_type: "WATCH",
@@ -782,7 +786,12 @@ test("explicit drop: a supported replacement ranks before a higher-net WATCH, th
     replacementQueries.push(url.search);
     // The backend's explicit-drop order: supported before WATCH even though the WATCH nets more.
     await route.fulfill({ json: { ...board(url.searchParams.get("mode") ?? "this_week", Number(url.searchParams.get("drop_player_id"))),
-      candidates: [supported, watch], best_add_for_team_id: 3, top_measured_candidate_id: 1, selected_player_result: "ADD" } });
+      candidates: [supported, watch], best_add_for_team_id: 3, top_measured_candidate_id: 1, selected_player_result: "ADD",
+      drop_summary: { drop_player_id: 4, drop_player_name: "Bench Forward", decision: "review_replacement", result: "ADD",
+        headline: "SUPPORTED ADD — ADD Overall Guard / DROP Bench Forward, net +0.73 roster-index points.",
+        best_valid_replacement_id: 3, watch_candidate_id: null,
+        highest_raw_comparison: { candidate_id: 1, player_name: "Available Center", verdict: "WATCH_ONLY", raw_net: 0.847, reconciled_net: 0.847,
+          reason: "Sample gate: Available Center 2 games this season and 2 in the last 14 days." } } } });
   });
   await page.route("**/api/v1/waivers/*/impact?**", async (route) => {
     const url = new URL(route.request().url());
@@ -806,7 +815,10 @@ test("explicit drop: a supported replacement ranks before a higher-net WATCH, th
   for (const card of await cards.all()) await expect(card).toContainText("Selected dropBench Forward");
   await expect(compare).toContainText("Each comparison uses only the selected drop: Bench Forward.");
   await expect(compare).toContainText("Ordered by the backend: supported moves first, then WATCH, HOLD and insufficient evidence");
-  await expect(compare).toContainText("Top measured option: Available Center");
+  // The higher-net WATCH is subordinate raw evidence; the supported pair is the answer.
+  await expect(compare.locator(".waiver-best-valid")).toHaveText("BEST VALID REPLACEMENT: Overall Guard SUPPORTED ADD");
+  await expect(compare.locator(".waiver-raw-comparison .waiver-verdict")).toHaveText("WATCH ONLY");
+  await expect(compare).not.toContainText("Top measured option");
   expect(replacementQueries.length).toBeGreaterThan(0);
   expect(replacementQueries.every((search) => search.includes("drop_player_id=4"))).toBe(true);
   const opener = cards.nth(0).getByRole("button", { name: "Analyze option: Overall Guard" });
@@ -824,6 +836,97 @@ test("explicit drop: a supported replacement ranks before a higher-net WATCH, th
   await expect(dialog).not.toBeVisible();
   await expect(opener).toBeFocused();
   await expect(compare.getByRole("radio", { name: /Bench Forward/ })).toBeChecked();
+  await expectNoBlockingOverflow(page);
+  await expectAccessible(page);
+});
+
+test("compare a specific drop: a rejected raw leader is never the answer; HOLD the drop or name the best valid replacement", async ({ page }) => {
+  // Deployed-acceptance regression (2026-11-21): the header named a DO NOT ADD pair "Top measured option" and answered
+  // INSUFFICIENT EVIDENCE. Synthetic fixture; the numbers mirror the read-only trace.
+  scenario = "full";
+  const reason = "Explanation-consistency gate: schedule: Available Center scores 7.7 fewer Yahoo FP/G than the drop (22.6 vs 30.3); "
+    + "66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 Yahoo fantasy points (-417.4), so 66 games vs 63 games does not offset the production loss. "
+    + "Without the unsupported claim the net is -0.3880.";
+  const nameOf = (dropId: number) => dropId === 2 ? "Weak Guard" : "Bench Forward";
+  const refuted = (dropId: number) => {
+    const comparison = drop(dropId, 1.025611);
+    return player(1, "Available Center", { ...comparison,
+      explanation: { ...comparison.explanation, consistent: false, reconciled_net: -0.388, blocker: reason } }, {
+      recommended_action: "INSUFFICIENT EVIDENCE", recommended_action_type: "INSUFFICIENT_EVIDENCE", verdict: "DO_NOT_ADD",
+      verdict_text: `DO NOT ADD — ADD Available Center / DROP ${nameOf(dropId)} shows +1.03 index points, but the schedule claim does not hold.`,
+      evidence_blockers: [reason] });
+  };
+  const other = (dropId: number) => dropId === 2
+    ? player(3, "Overall Guard", drop(dropId, 0.41), { recommended_action: "ADD", recommended_action_type: "ADD_DROP", evidence_blockers: [],
+      verdict_text: "SUPPORTED ADD — ADD Overall Guard / DROP Weak Guard, net +0.41 roster-index points." })
+    : player(3, "Overall Guard", drop(dropId, -1.2), { recommended_action: "PASS", recommended_action_type: "HOLD", evidence_blockers: [] });
+  await page.route("**/api/v1/waivers/replacements?**", async (route) => {
+    const url = new URL(route.request().url());
+    expect(route.request().method()).toBe("GET");
+    const dropId = Number(url.searchParams.get("drop_player_id"));
+    const name = nameOf(dropId);
+    const valid = dropId === 2;
+    const rows = [other(dropId), refuted(dropId)];
+    await route.fulfill({ json: { ...board(url.searchParams.get("mode") ?? "this_week", dropId), candidates: rows,
+      best_add_for_team_id: valid ? 3 : null, top_measured_candidate_id: 1, selected_player_result: valid ? "ADD" : `HOLD ${name}`,
+      drop_summary: { drop_player_id: dropId, drop_player_name: name, decision: valid ? "review_replacement" : "keep_on_measured_model",
+        result: valid ? "ADD" : `HOLD ${name}`, best_valid_replacement_id: valid ? 3 : null, watch_candidate_id: null,
+        headline: valid ? rows[0].verdict_text : `No supported or WATCH replacement exists for DROP ${name}; 1 positive raw model `
+          + `comparison did not pass the decision gates (1 DO NOT ADD). Keep ${name} under this model.`,
+        highest_raw_comparison: { candidate_id: 1, player_name: "Available Center", verdict: "DO_NOT_ADD", raw_net: 1.025611,
+          reconciled_net: -0.388, reason } } } });
+  });
+  await page.route("**/api/v1/waivers/*/impact?**", async (route) => {
+    const url = new URL(route.request().url());
+    const dropId = Number(url.searchParams.get("drop_player_id"));
+    const row = Number(url.pathname.split("/").at(-2)) === 1 ? refuted(dropId) : other(dropId);
+    await route.fulfill({ json: { league_key: "478.l.50505", team_key: "478.l.50505.t.9", mode: url.searchParams.get("mode"),
+      model_version: VERSION, candidate: row, comparison: row.comparison, limitations: [] } });
+  });
+  await page.goto("/waivers");
+  const compare = section(page, "COMPARE A SPECIFIC DROP");
+  await openDropPicker(page);
+  await compare.getByRole("radio", { name: /Bench Forward/ }).check();
+  // A: no favorable "top" wording for the rejected pair; the answer is HOLD the selected drop.
+  const answer = compare.locator(".waiver-drop-answer");
+  await expect(answer.locator(".waiver-outcome")).toHaveText("HOLD Bench Forward");
+  await expect(answer).toContainText("No supported or WATCH replacement exists for DROP Bench Forward");
+  await expect(compare).not.toContainText("Top measured option");
+  await expect(answer.locator(".waiver-best-valid")).toHaveCount(0);
+  // B: the rejected comparison stays visible below the answer, with its verdict, both nets and the rejection reason.
+  const raw = answer.locator(".waiver-raw-comparison");
+  await expect(raw).toContainText("HIGHEST RAW MODEL COMPARISON — not a recommendation");
+  await expect(raw.locator(".waiver-verdict")).toHaveText("DO NOT ADD");
+  await expect(raw).toContainText("Raw net+1.03 index points");
+  await expect(raw).toContainText("Reconciled net-0.39 index points");
+  await expect(raw).toContainText(`Why it is not the answer: ${reason}`);
+  // D: the selected drop stays fixed on every card.
+  const cards = compare.locator(".waiver-replacement-card");
+  await expect(cards).toHaveCount(2);
+  for (const card of await cards.all()) await expect(card).toContainText("Selected dropBench Forward");
+  await expectNoBlockingOverflow(page);
+  await expectAccessible(page);
+  // E + F: Analyze opens exactly the displayed pair; closing returns keyboard focus to the same button.
+  const opener = raw.getByRole("button", { name: "Analyze ADD Available Center / DROP Bench Forward" });
+  const impact = page.waitForRequest((request) => request.url().includes("/waivers/1/impact?") && request.url().includes("drop_player_id=4"));
+  await opener.focus();
+  await page.keyboard.press("Enter");
+  await impact;
+  const dialog = page.getByRole("dialog", { name: "Player impact analysis" });
+  await expect(dialog.getByRole("button", { name: "Close analysis" })).toBeFocused();
+  await expect(dialog).toContainText("Add Available Center; drop Bench Forward.");
+  await expect(dialog.locator(".waiver-verdict").first()).toHaveText("DO NOT ADD");
+  await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(opener).toBeFocused();
+  await expect(compare.getByRole("radio", { name: /Bench Forward/ })).toBeChecked();
+  // C: when a supported pair exists for the selected drop it is the BEST VALID REPLACEMENT, above the raw comparison.
+  await compare.getByRole("radio", { name: /Weak Guard/ }).check();
+  await expect(answer.locator(".waiver-outcome")).toHaveText("ADD");
+  await expect(answer.locator(".waiver-best-valid")).toHaveText("BEST VALID REPLACEMENT: Overall Guard SUPPORTED ADD");
+  await expect(raw.locator("p strong").first()).toHaveText("Available Center");
+  await expect(raw.getByRole("button", { name: "Analyze ADD Available Center / DROP Weak Guard" })).toBeVisible();
   await expectNoBlockingOverflow(page);
   await expectAccessible(page);
 });

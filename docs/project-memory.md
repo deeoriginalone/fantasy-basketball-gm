@@ -148,8 +148,31 @@
 ## Waiver Center Invariants
 
 - **Phase 7: decision integrity** (model `waiver-decision-integrity-phase7`;
-  implemented and validated locally on 2026-11-21, **NOT deployed**; no
-  migration). See `docs/sessions/2026-11-21.md`.
+  **deployed** 2026-11-21 16:36 UTC from commit `a9a0367`, `api` and
+  `frontend` only, no migration; rollback images tagged `pre-phase7`). See
+  `docs/sessions/2026-11-21.md`.
+  - **Open gap (found in the deploy acceptance; fixed locally in Phase 7.1,
+    NOT deployed or committed):** deployed Phase 7's Compare a Specific Drop
+    "Top measured option" (`top_measured_candidate_id`) and
+    `selected_player_result` use the raw net. They can name a refuted pair
+    (13 of 64 drop × horizon views on 2026-11-21). Recommendation surfaces
+    are not affected.
+  - **Phase 7.1 contract (local, `waiver-decision-integrity-phase7.1`):**
+    - For an explicit drop, `WaiverBoard.drop_summary` (`build_drop_summary`)
+      derives the answer from the cards' gated decisions in
+      `replacement_order`, with the roster label's categories. Its `decision`
+      always equals the drop's `roster_decision`:
+      - first supported pair → its action, as `best_valid_replacement_id`
+        (= `best_add_for_team_id`);
+      - else WATCH;
+      - else `HOLD <drop>`;
+      - else `CANNOT EVALUATE`.
+    - The raw leader is only `highest_raw_comparison`, present when it
+      outranks the answer, with its gate reason.
+    - `top_measured_candidate_id` stays the raw leader and is not
+      gate-aware.
+    - The page renders the summary verbatim, looks players up by ID only,
+      and fails closed without it.
   - **Explanations.** Every measured comparison carries a backend
     `PairExplanation`:
     - contributions summing to the net within 1e-5;
@@ -263,7 +286,9 @@
     - Unsupported measured upside never outranks a supported decision.
     - The first supported row equals the drop board's best add (`pair_order`
       for the fixed drop).
-    - The list always includes the top measured option the page names.
+    - The list always includes the top measured option (raw leader) and the
+      best valid replacement; in Phase 7.1 (local) the page names the raw
+      leader only as the subordinate highest raw model comparison.
     - The frontend never re-sorts it.
     - It does not touch the optimizer, the no-drop board or
       `decision_priority`.

@@ -71,6 +71,9 @@ OptionGroupKey = Literal[
 ]
 # The answer every option gives to "should I make this move?" (backend-owned; the page never infers one).
 TransactionVerdict = Literal["SUPPORTED_ADD", "WATCH_ONLY", "NEAR_TIE", "DO_NOT_ADD", "CANNOT_EVALUATE"]
+# One drop's answer from the same gated exact-pair decisions the optimizer uses: a supported replacement exists, only
+# WATCH (positive but sample-blocked) replacements exist, no replacement passes the gates, or nothing is measured.
+RosterDecision = Literal["review_replacement", "watch_replacement", "keep_on_measured_model", "unavailable"]
 # Why a form window has no fantasy PPG; the page shows the reason instead of a bare "n/a".
 FormReason = Literal[
     "NO_GAMES_IN_WINDOW", "GAME_LOGS_MISSING", "MAPPING_UNRESOLVED", "DATA_STALE", "SCORING_FIELD_MISSING",
@@ -90,7 +93,7 @@ EvidenceDimensionKey = Literal["PRODUCTION_SAMPLE", "CURRENT_ROLE", "SCHEDULE", 
 RESOLVED_IDENTITY_STATES = frozenset({
     "EXACT_ID", "EXACT_NAME_TEAM", "NORMALIZED_NAME_TEAM", "KNOWN_ALIAS_TEAM", "TEAM_CHANGE_SUPPORTED",
 })
-MODEL_VERSION = "waiver-decision-integrity-phase7"
+MODEL_VERSION = "waiver-decision-integrity-phase7.1"
 
 
 class Evidence(BaseModel):
@@ -859,9 +862,7 @@ class Candidate(BaseModel):
     data_quality: dict[str, Evidence]
     ranking_value: RankingEvidence = Field(default_factory=RankingEvidence)
     comparison: DropOption | None = None
-    # Derived from the same gated exact-pair decisions the optimizer uses: a supported replacement exists, only
-    # WATCH (positive but sample-blocked) replacements exist, no replacement improves the roster, or nothing measured.
-    roster_decision: Literal["review_replacement", "watch_replacement", "keep_on_measured_model", "unavailable"] = "unavailable"
+    roster_decision: RosterDecision = "unavailable"
     recommended_action_type: ActionType = "INSUFFICIENT_EVIDENCE"
     action_label: str = ""
     requires_drop: bool | None = None
@@ -1060,6 +1061,32 @@ class FillRecommendation(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
+class RawModelComparison(BaseModel):
+    """The selected drop's highest raw model net when that pair is not the summary's answer: subordinate evidence,
+    never a recommendation. `reason` is the backend's stated reason the pair is not the answer."""
+    candidate_id: int
+    player_name: str
+    verdict: TransactionVerdict
+    raw_net: float
+    reconciled_net: float | None = None
+    reason: str
+
+
+class DropSummary(BaseModel):
+    """Compare a Specific Drop answer for the exact selected drop. It comes from the gated exact-pair decisions of the
+    replacement cards (their canonical order), so it always equals the drop's roster label; never from raw net."""
+    drop_player_id: int
+    drop_player_name: str
+    decision: RosterDecision
+    result: str
+    headline: str
+    # The first supported pair in the canonical order (= best_add_for_team_id for the drop); None otherwise.
+    best_valid_replacement_id: int | None = None
+    # The first WATCH pair in the canonical order when the answer is WATCH; None otherwise.
+    watch_candidate_id: int | None = None
+    highest_raw_comparison: RawModelComparison | None = None
+
+
 class WaiverBoard(BaseModel):
     league_key: str
     team_key: str
@@ -1082,9 +1109,11 @@ class WaiverBoard(BaseModel):
     data_gaps: list[DataGap] = Field(default_factory=list)
     roster: list[Candidate] = Field(default_factory=list)
     selected_drop_player_id: int | None = None
+    # Highest raw model net (not gate-aware); for a selected drop the gated answer is `drop_summary`.
     top_measured_candidate_id: int | None = None
     waiver_rules: list[str] = Field(default_factory=list)
     selected_player_result: str = "INSUFFICIENT EVIDENCE"
+    drop_summary: DropSummary | None = None
     recommended_action_type: ActionType = "INSUFFICIENT_EVIDENCE"
     roster_capacity: RosterCapacity | None = None
     team_needs_analysis: TeamNeeds | None = None

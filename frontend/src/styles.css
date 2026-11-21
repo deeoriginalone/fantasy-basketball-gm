@@ -589,7 +589,9 @@ h1, h2, p { margin-top: 0; }
 .waiver-sample-no-current-season-evidence, .waiver-sample-insufficient-for-strong-recommendation, .waiver-sample-very-limited { color: #5e2800; background: #ffe1b4; }
 .waiver-sample-limited { color: #4d4000; background: #fff1ae; }
 .waiver-sample-good, .waiver-sample-excellent { color: #174b38; background: #d8f1e4; }
-.waiver-measured-label { font-weight: 700; }
+.waiver-best-valid { margin: 8px 0 0; }
+.waiver-raw-comparison { margin: 10px 0 14px; padding: 10px 12px; border: 1px dashed var(--line, #445064); border-radius: 6px; font-size: .92rem; overflow-wrap: anywhere; }
+.waiver-raw-comparison .waiver-comparison { margin: 6px 0; gap: 8px; }
 .waiver-outcome { padding: 10px 12px; border-left: 3px solid var(--forest, #377d65); }
 .waiver-outcome.is-no-improvement { border-color: #dc8989; }
 .waiver-component-list { columns: 2; }

@@ -4,6 +4,8 @@ export type FormTrendLabel = "IMPROVING" | "DECLINING" | "STABLE" | "MIXED" | "I
 export type MoveIntent = "STREAM" | "TWO_WEEK_STREAM" | "LONGER_TERM_ADD" | "WATCH" | "HOLD" | "INSUFFICIENT_EVIDENCE";
 /** The backend's answer to "should I make this move?"; the page never infers one. */
 export type TransactionVerdict = "SUPPORTED_ADD" | "WATCH_ONLY" | "NEAR_TIE" | "DO_NOT_ADD" | "CANNOT_EVALUATE";
+/** One drop's answer from the same gated exact-pair decisions the optimizer uses. */
+export type RosterDecision = "review_replacement" | "watch_replacement" | "keep_on_measured_model" | "unavailable";
 export type FormReason = "NO_GAMES_IN_WINDOW" | "GAME_LOGS_MISSING" | "MAPPING_UNRESOLVED" | "DATA_STALE"
   | "SCORING_FIELD_MISSING" | "SCORING_UNSUPPORTED" | "NO_PREVIOUS_SEASON";
 
@@ -882,7 +884,7 @@ export interface WaiverCandidate {
   comparison: WaiverDrop | null;
   best_drop_options: WaiverDrop[];
   net_improvement: number | null;
-  roster_decision: "review_replacement" | "watch_replacement" | "keep_on_measured_model" | "unavailable";
+  roster_decision: RosterDecision;
   reasons: string[];
   limitations: string[];
   data_quality: Record<string, WaiverEvidence>;
@@ -926,6 +928,28 @@ export interface FillRecommendation {
   limitations: string[];
 }
 
+/** The selected drop's highest raw model net when that pair is not the answer: subordinate evidence, never advice. */
+export interface RawModelComparison {
+  candidate_id: number;
+  player_name: string;
+  verdict: TransactionVerdict;
+  raw_net: number;
+  reconciled_net: number | null;
+  reason: string;
+}
+
+/** Backend-owned Compare a Specific Drop answer from the same gated pair decisions as the cards and the roster label. */
+export interface DropSummary {
+  drop_player_id: number;
+  drop_player_name: string;
+  decision: RosterDecision;
+  result: string;
+  headline: string;
+  best_valid_replacement_id: number | null;
+  watch_candidate_id: number | null;
+  highest_raw_comparison: RawModelComparison | null;
+}
+
 export interface WaiverBoard {
   league_key: string;
   team_key: string;
@@ -941,9 +965,12 @@ export interface WaiverBoard {
   team_needs: string[];
   roster: WaiverCandidate[];
   selected_drop_player_id: number | null;
+  /** Highest raw model net (not gate-aware); for a selected drop the gated answer is `drop_summary`. */
   top_measured_candidate_id: number | null;
   waiver_rules: string[];
   selected_player_result: string;
+  /** Backend-owned answer for an explicitly selected drop; null without one. */
+  drop_summary?: DropSummary | null;
   candidates: WaiverCandidate[];
   excluded_count: number;
   unknown_availability_count: number;

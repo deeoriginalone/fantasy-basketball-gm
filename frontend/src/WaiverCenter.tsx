@@ -37,7 +37,7 @@ import type {
   WaiverSampleLabel,
 } from "./waiverTypes";
 
-const CURRENT_WAIVER_MODEL_VERSION = "waiver-decision-integrity-phase7";
+const CURRENT_WAIVER_MODEL_VERSION = "waiver-decision-integrity-phase7.1";
 // Only these Yahoo availability classes may back a supported move or a featured recommendation.
 const ACTIONABLE_AVAILABILITY = new Set<AvailabilityClass>([
   "CONFIRMED_FA", "CONFIRMED_WAIVER", "UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT",
@@ -1118,6 +1118,40 @@ function RosterPicker({ roster, selectedId, onSelect }: {
   </>;
 }
 
+/** The backend's answer for the exact selected drop. Players are only looked up by ID: the page never ranks or
+ * promotes a card itself, and a missing or inconsistent answer names nobody. */
+export function SelectedDropAnswer({ board, selectedDropId, onAnalyze }: {
+  board: WaiverBoard;
+  selectedDropId: number | null;
+  onAnalyze: (id: number) => void;
+}) {
+  const summary = board.drop_summary;
+  if (!summary || summary.drop_player_id !== selectedDropId) {
+    return <p className="notice notice-error" role="alert">The selected-drop answer is missing from this response; no replacement is named.</p>;
+  }
+  const best = summary.best_valid_replacement_id === null ? null
+    : board.candidates.find((candidate) => candidate.player_id === summary.best_valid_replacement_id);
+  if (best !== null && best?.verdict !== "SUPPORTED_ADD") {
+    return <p className="notice notice-error" role="alert">The selected-drop answer was withheld: its best valid replacement is not a SUPPORTED ADD card in this response.</p>;
+  }
+  const raw = summary.highest_raw_comparison;
+  return <div className="waiver-drop-answer">
+    <p className="waiver-outcome"><strong>{summary.result}</strong></p>
+    {best && <p className="waiver-best-valid"><span className="waiver-kicker">BEST VALID REPLACEMENT:</span> <strong>{best.player_name}</strong> <VerdictBadge verdict={best.verdict} /></p>}
+    <p className="waiver-option-headline">{summary.headline}</p>
+    {raw && <div className="waiver-raw-comparison">
+      <p className="waiver-kicker">HIGHEST RAW MODEL COMPARISON — not a recommendation</p>
+      <p><strong>{raw.player_name}</strong> <VerdictBadge verdict={raw.verdict} /></p>
+      <dl className="waiver-comparison">
+        <div><dt>Raw net</dt><dd>{indexNet(raw.raw_net)}</dd></div>
+        <div><dt>Reconciled net</dt><dd>{indexNet(raw.reconciled_net)}</dd></div>
+      </dl>
+      <p><strong>Why it is not the answer:</strong> {raw.reason}</p>
+      <button className="button button-quiet" onClick={() => onAnalyze(raw.candidate_id)}>Analyze ADD {raw.player_name} / DROP {summary.drop_player_name}</button>
+    </div>}
+  </div>;
+}
+
 export function Replacements({ board, loading, error, selectedDropId, onAnalyze }: {
   board: WaiverBoard | null;
   loading: boolean;
@@ -1131,16 +1165,14 @@ export function Replacements({ board, loading, error, selectedDropId, onAnalyze 
       <p className="notice notice-error" role="alert">Replacement evidence uses incompatible model {board.model_version}; expected {CURRENT_WAIVER_MODEL_VERSION}. Do not use these results.</p>
     </div>;
   }
-  const measured = board?.candidates.find((candidate) => candidate.player_id === board.top_measured_candidate_id);
   return <div className="waiver-replacements">
     <h3 id="waiver-replacements">Top 3 replacements</h3>
     <p>Each comparison uses only the selected drop: {board?.roster.find((candidate) => candidate.player_id === selectedDropId)?.player_name ?? "select a roster player"}.</p>
     <p className="waiver-window-note">Ordered by the backend: supported moves first, then WATCH, HOLD and insufficient evidence; within each group by measured net improvement.</p>
-    {board && <p className="waiver-outcome"><strong>{board.selected_player_result}</strong></p>}
-    <p className="waiver-measured-label">Top measured option: {measured?.player_name ?? "not established"} · {measured ? "model-ranked, limited evidence" : "limited evidence"}</p>
     {loading && <p role="status">Loading replacements for the selected player...</p>}
     {error && <p role="alert">{error} Select the roster player again or reload to retry.</p>}
     {!loading && !error && !board && selectedDropId === null && <p>No comparison is available without a roster player selection.</p>}
+    {!loading && !error && board && <SelectedDropAnswer board={board} selectedDropId={selectedDropId} onAnalyze={onAnalyze} />}
     {!loading && !error && board && !board.candidates.length && <p role="status">No replacement candidates are supported for this selected player.</p>}
     {!loading && !error && board && <div className="waiver-replacement-list">
       {board.candidates.slice(0, 3).map((candidate, index) =>

@@ -64,6 +64,7 @@ from app.features.waivers.contracts import (
     DataGapCategory,
     DecisionSupport,
     DropOption,
+    DropSummary,
     Evidence,
     EvidenceDimension,
     FillRecommendation,
@@ -80,6 +81,7 @@ from app.features.waivers.contracts import (
     PotentialNbaMatch,
     ProductionCoverage,
     RankingEvidence,
+    RawModelComparison,
     RecentForm,
     RootCause,
     RoleCoverage,
@@ -2818,6 +2820,55 @@ def _best_actionable(candidates: list[Candidate]) -> Candidate | None:
         row.comparison.player_id if row.comparison is not None and row.comparison.player_id is not None else 0), default=None)
 
 
+def rejection_reason(row: Candidate) -> str:
+    """Why a pair is not the selected drop's answer: its failed explanation check, else its first gate note, else its
+    verdict sentence (a nonpositive comparison)."""
+    explanation = row.comparison.explanation if row.comparison is not None else None
+    if explanation is not None and not explanation.consistent and explanation.blocker:
+        return explanation.blocker
+    return next(iter(row.evidence_blockers), row.verdict_text)
+
+
+def build_drop_summary(ctx: Context, candidates: list[Candidate], drop_id: int, best_add: Candidate | None,
+        top_measured: Candidate | None) -> DropSummary:
+    """Compare a Specific Drop answer. `candidates` are the exact pairs against the drop in the canonical gate-aware
+    order (`replacement_order`); the categories are the roster label's, so header, cards and label never disagree.
+    The highest raw net is reported only as subordinate evidence when it is not the answer."""
+    name = ctx.players[drop_id].player_name
+    watch = next((row for row in candidates if row.recommended_action_type == "WATCH"), None)
+    primary = best_add or watch
+    if best_add is not None:
+        decision, result, headline = "review_replacement", best_add.recommended_action, best_add.verdict_text
+    elif watch is not None:
+        decision, result, headline = "watch_replacement", "WATCH", watch.verdict_text
+    elif any(row.net_improvement is not None for row in candidates):
+        rejected = Counter(row.verdict.replace("_", " ") for row in candidates
+            if row.net_improvement is not None and row.net_improvement > 0)
+        count = sum(rejected.values())
+        detail = (f"{count} positive raw model comparison{'s' if count != 1 else ''} did not pass the decision gates ("
+            + ", ".join(f"{number} {verdict}" for verdict, number in sorted(rejected.items())) + ")"
+            if count else "no comparison improves the measured roster index")
+        decision, result = "keep_on_measured_model", f"HOLD {name}"
+        headline = f"No supported or WATCH replacement exists for DROP {name}; {detail}. Keep {name} under this model."
+    else:
+        why = (next((row.comparison.reasons[0] for row in candidates if row.comparison is not None and row.comparison.reasons), None)
+            or next((row.evidence_blockers[0] for row in candidates if row.evidence_blockers), None)
+            or "no eligible waiver candidate has a measured comparison")
+        decision, result = "unavailable", "CANNOT EVALUATE"
+        headline = f"No measured comparison exists for DROP {name}: {why.rstrip('.')}."
+    raw = None
+    if top_measured is not None and (primary is None or top_measured.net_improvement > primary.net_improvement):
+        explanation = top_measured.comparison.explanation if top_measured.comparison is not None else None
+        raw = RawModelComparison(candidate_id=top_measured.player_id, player_name=top_measured.player_name,
+            verdict=top_measured.verdict, raw_net=top_measured.net_improvement,
+            reconciled_net=explanation.reconciled_net if explanation is not None else None,
+            reason=rejection_reason(top_measured))
+    return DropSummary(drop_player_id=drop_id, drop_player_name=name, decision=decision, result=result,
+        headline=headline, best_valid_replacement_id=best_add.player_id if best_add is not None else None,
+        watch_candidate_id=watch.player_id if best_add is None and watch is not None else None,
+        highest_raw_comparison=raw)
+
+
 def supported_board_moves(ctx: Context, candidates: list[Candidate]) -> tuple[list[FillRecommendation], Candidate | None]:
     """Strict supported moves the board features with no explicit drop: the fill plan shared with the
     transactions endpoint for open capacity, else the best actionable ADD + DROP; none when undetermined."""
@@ -2933,6 +2984,7 @@ def build_board(ctx: Context, league_key: str, team_key: str, mode: Mode, drop_i
     for row in (best_add, top_measured if drop_id is not None else None):
         if row is not None and all(row.player_id != kept.player_id for kept in shown):
             shown.append(row)
+    summary = build_drop_summary(ctx, candidates, drop_id, best_add, top_measured) if drop_id is not None else None
     record_count("candidates", len(candidates))
     return WaiverBoard(
         league_key=league_key, team_key=team_key, mode=mode, generated_at=ctx.now, weights=ctx.weights,
@@ -2947,11 +2999,12 @@ def build_board(ctx: Context, league_key: str, team_key: str, mode: Mode, drop_i
         roster=manager, selected_drop_player_id=drop_id,
         waiver_rules=verify_league_contract(ctx.league) if ctx.quality["settings"].state == "available" else [],
         selected_player_result=(
-            f"HOLD {ctx.players[drop_id].player_name}" if drop_id is not None and top_measured and top_measured.net_improvement <= 0
+            summary.result if summary is not None
             else best_add.recommended_action if best_add
             else "WATCH" if any(row.recommended_action == "WATCH" for row in candidates)
             else "INSUFFICIENT EVIDENCE"
         ),
+        drop_summary=summary,
         excluded_count=sum(row.availability in {"free_agent", "waivers", "unrostered"} and not row.eligible for row in ctx.players.values()),
         unknown_availability_count=sum(row.availability == "unknown" for row in ctx.players.values()),
         limitations=BASE_LIMITATIONS, data_quality=ctx.quality,
@@ -2993,6 +3046,9 @@ def board_recommended_ids(board: WaiverBoard) -> dict[str, list[int]]:
         ) if pid is not None]
     if board.team_needs_analysis is not None:
         ids["need_options"] = [pid for need in board.team_needs_analysis.needs for pid in need.compatible_candidate_ids]
+    if board.drop_summary is not None:
+        ids["drop_summary"] = [pid for pid in (board.drop_summary.best_valid_replacement_id,
+            board.drop_summary.watch_candidate_id) if pid is not None]
     return ids
 
 

@@ -1,15 +1,186 @@
-# CURRENT STATE — Waiver Decision-Integrity Audit — Implemented and Validated Locally, NOT Deployed — 2026-11-21
+# CURRENT STATE — Phase 7.1 Compare-a-Drop Gate Fix — Implemented and Validated Locally (NOT DEPLOYED, NOT COMMITTED) — 2026-11-21
 
-**STATUS: LOCAL WORKTREE ONLY (2026-11-21, uncommitted). NOTHING DEPLOYED.**
+**STATUS: LOCAL ONLY.** Production still runs Phase 7 (below). The Phase 7.1
+fix (model `waiver-decision-integrity-phase7.1`) is in the working tree on
+top of `a9a0367`. It is **not committed and not deployed**; both need explicit
+authorization. Full evidence: `qa-work/2026-11-21-phase71-fix/phase71-report.md`
+(local, untracked).
 
-The deployed application is unchanged since 2026-11-15: model
-`waiver-horizon-evidence-phase6` plus the heavy-read admission fix (section
-below). The live page therefore still features the pre-audit answers,
-including **ADD Isaiah Jackson / DROP Jarrett Allen (+1.03)** in Rest of
-Season Outlook. This audit proved that pair is not supported, but the live
-page will show it until phase 7 is deployed.
+- **Root cause:** for an explicit drop, `build_board` named the raw-net leader
+  "Top measured option" and derived the result from it. A pair refuted by the
+  Phase-7 gate keeps its positive raw net, so the header could name a DO NOT
+  ADD pair and read INSUFFICIENT EVIDENCE instead of HOLD.
+- **Fix:** a backend `drop_summary` built from the cards' own gated decisions
+  in their canonical order, with the roster label's categories:
+  - BEST VALID REPLACEMENT (first supported pair);
+  - else WATCH (never promoted);
+  - else **HOLD <drop>**;
+  - else CANNOT EVALUATE.
 
-Model `waiver-decision-integrity-phase7` exists only in the worktree, on top
+  The raw leader is shown only as a subordinate "HIGHEST RAW MODEL
+  COMPARISON — not a recommendation", with verdict, raw and reconciled net,
+  the gate reason and an exact-pair Analyze. The no-drop board, optimizer,
+  scoring and gates are unchanged.
+- **Validation:**
+  - Backend: waiver files 328 and full suite 492 pass.
+  - Frontend: unit 76/76, `tsc -b` and build pass.
+  - Desktop Playwright: 24/24 (1440 × 1000, one worker).
+  - The new tests failed before the fix for the stated reasons.
+- **Read-only acceptance (current snapshot, unchanged; SELECT only):**
+  - Scope: all 16 roster drops × 4 horizons = 64 views, run through Phase 7
+    and 7.1 with the same pinned clock.
+  - 0 invariant violations, 0 DO NOT ADD answers, 0 WATCH-over-supported
+    answers.
+  - The 13 refuted-leader views now read HOLD. The 3 injury-slot drops read
+    CANNOT EVALUATE in all horizons (12 views).
+  - Every supported or WATCH answer, every card, best moves and the
+    no-drop boards are unchanged. The only no-drop difference is the new
+    `drop_summary: null`.
+  - Rest of Season DROP Jarrett Allen reads **HOLD Jarrett Allen**. Isaiah
+    Jackson stays visible as raw +1.025611, reconciled −0.387882, DO NOT ADD,
+    with the gate arithmetic.
+
+# CURRENT STATE — Phase 7 Waiver Decision Integrity — Deployed and Verified — 2026-11-21
+
+**STATUS: DEPLOYED AND VERIFIED (2026-11-21 16:36 UTC; 08:36 PST).** Model
+`waiver-decision-integrity-phase7` is in production. It was deployed from
+commit `a9a0367` ("feat: enforce waiver decision integrity"; not pushed).
+
+- Only `api` and `frontend` were recreated.
+- No migration, refresh, provider call, OAuth, Yahoo transaction or data
+  change came from this work.
+- Full evidence: `qa-work/2026-11-21-phase7-deploy/deployment-acceptance.md`
+  (local, untracked).
+
+### Snapshot
+
+The user's own REFRESH WAIVER DATA (job `043e463ebb71`, 15:50:56–15:58:54
+UTC, from Windows Chrome) replaced the audit's 09:37 snapshot before this
+deployment session began.
+
+- Imports are now 15:53:01 (Yahoo) and 15:56:41 (NBA). Games run through
+  2026-11-20 in both.
+- Acceptance therefore compared production against a read-only Phase-7
+  shadow of this snapshot, not the audit's counts.
+
+### Deployment
+
+- **Gate:**
+  - Source items A–G were verified.
+  - Running Phase 6 equaled `2d48784`: 102 `.py` files.
+  - 29 tables and 6 migrations, with no migration or model change.
+  - The db container's 11-19 05:23 recreation was watchtower's
+    `postgres:16-alpine` update (clean shutdown, same data directory).
+  - Watchtower's next run is 2026-11-22 05:24 UTC; it cannot pull these
+    local images.
+- **Tests (disposable infrastructure):**
+  - Backend: waiver files 320 and full 484 passed.
+  - Frontend: `tsc -b`, unit 73/73 and `npm run build` pass.
+  - Desktop Playwright: 23/23 (1440 × 1000, one worker).
+- **Backup:** `~/fantasy-gm-pre-phase7-20261121T162834Z.dump`.
+  - 138 MB, mode 0600, SHA-256 `10fc00d8c7ec…`.
+  - `pg_restore --list`: 176 TOC entries and 29 TABLE DATA. The archive's
+    COPY row counts equal the live database (29 tables, 79,433 rows).
+- **Rollback tags:** matched to the running containers' platform manifests
+  and proven byte-identical.
+  - `fantasy-basketball-gm-api:pre-phase7`: index `e96e4be1b377`,
+    linux/amd64 `cdbb6a1f36dc`. Its 103 `/app` files and `pip freeze` equal
+    the running container.
+  - `fantasy-basketball-gm-frontend:pre-phase7`: index `8e4328dc73c1`,
+    linux/amd64 `2b268cbb7a53`. Its 26 html files and both nginx configs
+    equal the running container. The running frontend's recorded index
+    `a7f00cb72046` no longer resolved.
+- **Build (serial):**
+  - **API:** index `01d2e3974298`, linux/amd64 `7c71acc08224`. All 104
+    `/app` files equal `a9a0367`, and the model is phase 7.
+  - **Frontend:** index `5316049dbaf8`, linux/amd64 `bff62074095f`. Its 25
+    html files equal the validated production-env build
+    (`index-CDtRcvSk.js`, `index-DD2IEjtO.css`), and the nginx config is
+    unchanged.
+- **Recreate:** `docker compose up -d --no-deps api frontend` ran
+  16:36:07–16:36:38 UTC; health returned 200 at 16:36:45.
+  - api `8d5ef901e996` and frontend `ec3dfae7f540`, 0 restarts.
+  - db `c41db6714843` and caddy `08198174d855` were not recreated.
+  - Clean startup with no migration. nginx resolves the new API; 4
+    connection-refused lines fall in the boot window.
+- **Rollback, if ever needed:** retag both `pre-phase7` images as `latest`,
+  then `docker compose up -d --no-deps api frontend`. No database rollback is
+  needed.
+
+### Acceptance (GET only, through Caddy with TLS validated)
+
+**Live Phase-6 baseline (same snapshot):** 24 GETs, all 200. It featured
+Rest of Season **Isaiah Jackson / Jarrett Allen +1.025611**. Supported
+moves were 28, 48, 47 and 135 (Rest of Week, Next 7, Next 14, Rest of
+Season).
+
+**Deployed Phase 7:** 24 GETs, all 200, all phase 7.
+
+- It equals the pre-deploy shadow path for path. The only differences are
+  request-time stamps and the router's `team_name`.
+- Board = optimizer = replacements = impact (with and without the drop),
+  explanation and verdict included, in every horizon.
+
+| Horizon | ADD / DROP | Net | Verdict and disclosures | Supported moves |
+|---|---|---|---|---|
+| Rest of Week | DeMar DeRozan / Kris Dunn | +0.589 | SUPPORTED ADD; PRIOR-SEASON DRIVEN (blend math shown); Dropping is permanent | 28 |
+| Next 7 Days | Keldon Johnson / Jarrett Allen | +0.566 | SUPPORTED ADD (STREAM); window +28.6 FP; Dropping is permanent | 44 |
+| Next 14 Days | Keldon Johnson / Jarrett Allen | +0.567 | SUPPORTED ADD (TWO-WEEK STREAM); **FRAGILE** +2.4 FP | 14 |
+| Rest of Season Outlook | **Isaiah Jackson / Kevin Huerter** | **+0.412** | SUPPORTED ADD (LONGER-TERM ADD) | 6 |
+
+- **Isaiah Jackson / Jarrett Allen** in Rest of Season is now **DO NOT ADD**
+  on every surface.
+  - 66 × 22.59 = 1490.9 vs 63 × 30.29 = 1908.3 Yahoo fantasy points.
+  - Model net +1.026; reconciled −0.388.
+  - Allen is "Keep: no supported replacement", and Luka Dončić is "Keep" in
+    every horizon.
+- **OTHER GOOD OPTIONS:** every card gives its verdict and exact drop (or
+  "No supported drop").
+- **Labels:** 0 "n/a" strings, and no lineup gap counts more dates than the
+  window has.
+- **Desktop page** (1440 × 1000, one worker, serial): 1 live test passed.
+  - Covered: all four horizons, every section, VIEW DETAILS and Compare a
+    Specific Drop.
+  - Keyboard focus returned for 4 dialogs.
+  - axe: 0 violations in 9 states.
+  - Page width 1440 everywhere; 17 requests, all GET.
+- **Database:** identical before the baseline, before the deploy and after
+  acceptance.
+  - All 29 tables' row counts and newest timestamps, `schema_migrations`.
+  - Every insert/update/delete counter, including the `yahoo_credentials`
+    canary.
+- **Logs:**
+  - nginx logged 0 non-GET requests since the session began.
+  - The new API logged 35 timings, all GET, with 0 refresh jobs and 0
+    provider or OAuth mentions.
+- **Admission:** still serializes heavy reads (8 queued) and cancelled an
+  abandoned read (`status=499`).
+- **Payloads:** board +27–31% (about 1.9 MB), transactions +25–27%. No
+  slowdown: 22 serial reads took 141 s, vs 166 s on Phase 6.
+
+### Residual defect found in acceptance (fixed locally in Phase 7.1; not deployed)
+
+Compare a Specific Drop's "Top measured option" and result line use the raw
+net, not the Phase-7 gate. In 13 of 64 drop × horizon views, the line names
+a refuted pair and reads INSUFFICIENT EVIDENCE instead of "HOLD <drop>":
+
+- Rest of Season: 8 views;
+- Next 14 Days: 3 views;
+- Next 7 Days: 2 views.
+
+Example: drop Jarrett Allen in Rest of Season reads "Top measured option:
+Isaiah Jackson · model-ranked, limited evidence", while its cards say DO NOT
+ADD.
+
+No recommendation surface is affected. Phase 7.1 (above) fixes it locally;
+deploying it needs authorization (see [next actions](next-actions.md)).
+
+# Waiver Decision-Integrity Audit — Implemented and Validated Locally — 2026-11-21 (deployed later that day; see above)
+
+**Historical record.** At the time of this section the deployed application
+was still model `waiver-horizon-evidence-phase6`, featuring **ADD Isaiah
+Jackson / DROP Jarrett Allen (+1.03)** in Rest of Season Outlook.
+Model `waiver-decision-integrity-phase7` then existed only in the worktree, on top
 of `2d48784`, uncommitted. No migration is needed. See the
 [2026-11-21 session record](../sessions/2026-11-21.md) and
 `qa-work/2026-11-21-waiver-audit/` (findings matrix, before/after traces,

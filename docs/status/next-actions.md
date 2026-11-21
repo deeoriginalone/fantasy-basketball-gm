@@ -66,9 +66,12 @@ The fix, model `waiver-decision-integrity-phase7`, adds:
 - exact drops on OTHER GOOD OPTIONS;
 - labeled evidence.
 
-It is **implemented and validated locally but NOT deployed**: the live page
-still serves phase 6. See the [current-state report](current-state.md) and
-the [2026-11-21 session record](../sessions/2026-11-21.md).
+It is **deployed and verified** (2026-11-21 16:36 UTC, commit `a9a0367`,
+`api` and `frontend` only, no migration or data change). The live page now
+features **Isaiah Jackson / Kevin Huerter (+0.412)** in Rest of Season
+Outlook, and Jackson / Allen is DO NOT ADD everywhere. See the
+[current-state report](current-state.md) and the
+[2026-11-21 session record](../sessions/2026-11-21.md).
 
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
 `PTS + 1.2*REB + 1.5*AST + 3*BLK + 3*STL - TO` from persisted Yahoo settings.
@@ -81,46 +84,65 @@ historical, stat-based evidence behind it, never a projection.
 The Phase-5 deployment, the first refresh, the 2026-11-14 acceptance-fix
 patch, the Phase-6 deployment (2026-11-14 21:30 UTC), the Phase-6 ordering
 and wording cleanup deployment (2026-11-15 02:36 UTC) and the heavy-read
-admission deployment (2026-11-15 14:50 UTC) are complete (see the
-[current-state report](current-state.md)); do not repeat them. The
-2026-11-21 decision-integrity work (phase 7) is local and uncommitted: it is
-neither committed nor deployed.
+admission deployment (2026-11-15 14:50 UTC) and the Phase-7
+decision-integrity deployment (2026-11-21 16:36 UTC) are complete (see the
+[current-state report](current-state.md)); do not repeat them.
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Do not act on the live Rest of Season Outlook pair; confirm everything
-   in Yahoo.** The user's REFRESH WAIVER DATA at 09:37–09:39 UTC on
-   2026-11-21 (job `8828016faf85`) saved the current snapshot: roster 13/13,
-   IL 3/3. The live phase-6 page shows:
-   - Rest of Week: ADD DeMar DeRozan / DROP Kris Dunn (+0.589).
-   - Next 7 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.566).
-   - Next 14 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.567).
-   - Rest of Season Outlook: ADD Isaiah Jackson / DROP Jarrett Allen
-     (+1.026). **Refuted** by the audit: Jackson trails Allen by 417 Yahoo
-     points over the window. Phase 7 features Jackson / Kevin Huerter
-     (+0.412) instead.
-
-   Phase 7 keeps the other three pairs but flags them:
-   - Rest of Week: PRIOR-SEASON DRIVEN and permanent drop.
-   - Next 7 Days: permanent drop of a 30.3 FP/G player for a 7-day stream.
-   - Next 14 Days: FRAGILE (+2.4 points, less than one game).
+1. **Confirm in Yahoo before acting on a deployed recommendation.** The
+   user's REFRESH WAIVER DATA at 15:50–15:58 UTC on 2026-11-21 (job
+   `043e463ebb71`) saved the current snapshot. The live Phase-7 page shows:
+   - Rest of Week: ADD DeMar DeRozan / DROP Kris Dunn (+0.589), flagged
+     PRIOR-SEASON DRIVEN and drop-permanent.
+   - Next 7 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.566). The
+     window holds (+28.6 FP), but it permanently drops a 30.3 FP/G player
+     for a 7-day stream.
+   - Next 14 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.567),
+     **FRAGILE** (+2.4 FP, less than one game).
+   - Rest of Season Outlook: ADD Isaiah Jackson / DROP Kevin Huerter
+     (+0.412). Jackson / Allen is DO NOT ADD.
 
    These are hypothetical analysis. Check FA/waiver state, locks, status and
    remaining weekly adds in Yahoo; the app never executes a move. Earlier
-   answers (2026-11-14/15) are historical.
-2. **Decide whether to deploy phase 7** (`waiver-decision-integrity-phase7`;
-   requires explicit authorization; nothing has been committed). It is an API
-   image and frontend rebuild with no migration and no refresh.
-   - Follow the established pattern: commit, a `pg_dump -Fc` backup,
-     rollback tags for both images, `docker compose build api frontend`,
-     recreate `api` and `frontend` only, then GET-only desktop acceptance on
-     the four horizons.
-   - Compare against `qa-work/2026-11-21-waiver-audit/acceptance-after.md`.
-     Expected on an unchanged snapshot:
-     - Rest of Season: Jackson / Huerter +0.412447;
-     - supported positive moves 24 / 39 / 12 / 4.
-   - Responses grow about 22–30% (board about 1.95 MB) because every
-     comparison carries its explanation.
+   answers (the Phase-6 Jackson / Allen pair and the 2026-11-14/15 pairs)
+   are historical.
+2. **Authorize (or not) committing and deploying Phase 7.1**, the Compare
+   a Specific Drop gate fix. It is implemented and validated locally, NOT
+   committed and NOT deployed.
+   - **Problem (deployed Phase 7):** `build_board` picks `top_measured` by raw
+     net and derives `selected_player_result` from it. In 13 of 64 drop ×
+     horizon views (Rest of Season 8, Next 14 Days 3, Next 7 Days 2), the
+     header names a refuted pair "Top measured option" and reads INSUFFICIENT
+     EVIDENCE instead of "HOLD <drop>". For example, drop Jarrett Allen in
+     Rest of Season names Isaiah Jackson while the cards say DO NOT ADD.
+   - **Local fix (model `waiver-decision-integrity-phase7.1`):** a backend
+     `drop_summary` from the cards' gated decisions, matching the roster
+     label:
+     - the answer is BEST VALID REPLACEMENT, WATCH, HOLD <drop> or CANNOT
+       EVALUATE;
+     - the raw leader appears only as a subordinate "HIGHEST RAW MODEL
+       COMPARISON", with its gate reason and an exact-pair Analyze.
+     - Nothing else changes.
+   - **Validated:**
+     - Backend 328 / 492; frontend unit 76/76, `tsc -b` and build; desktop
+       Playwright 24/24.
+     - Read-only shadow of all 64 views: 0 invariant violations; best moves
+       and no-drop boards unchanged.
+     - Evidence: `qa-work/2026-11-21-phase71-fix/phase71-report.md`.
+   - **Deploy (only after authorization), same procedure as Phase 7:**
+     1. Check memory and IO pressure.
+     2. Make one commit of the 8 code files (qa-work stays untracked); run
+        gitleaks and `git diff --check`.
+     3. Back up the database and tag the running images `pre-phase71`.
+     4. Build `api`, then `frontend`, serially.
+     5. Run `docker compose up -d --no-deps api frontend`. Recreate both
+        together: the version bump makes a mixed pair fail closed.
+     6. Run GET-only acceptance of the 64 answers and confirm best moves
+        are unchanged.
+
+     **Rollback:** retag `pre-phase71` as latest and recreate `api` and
+     `frontend`. No database rollback is needed.
 3. **Watch the deployed heavy-read admission.** It has been live since
    2026-11-15 14:50 UTC (api `bdf329394c93`).
    - A cancelled read logs `status=499` with a `queue` phase in

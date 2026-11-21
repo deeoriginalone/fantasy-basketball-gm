@@ -3610,6 +3610,162 @@ def test_roster_drop_labels_follow_the_same_gated_pair_decisions():
     assert labels[drop.player_id] == "keep_on_measured_model"
 
 
+# --- 2026-11-21 Phase 7.1: gate-aware Compare a Specific Drop summary -------------------------------------------------
+# Deployed-acceptance regression (read-only, 13 of 64 drop x horizon views): for an explicit drop the page named the
+# highest raw-net pair "Top measured option" and answered INSUFFICIENT EVIDENCE although the explanation gate rejects
+# that exact pair (DO NOT ADD); the answer is HOLD. Synthetic fixtures; nothing here names or protects a player.
+
+def refuted_add(pid=11):
+    """Raw net > 0 only from a schedule edge that loses Yahoo window points (4 x 14 = 56 < 2 x 30 = 60)."""
+    return integrity_player(pid, "C", ppg=14, games=4, pct=70, schedule_pct=90)
+
+
+def drop_board(ctx, drop):
+    from app.features.waivers.service import build_board
+    return build_board(ctx, "fixture", "t1", ctx.mode, drop.player_id)
+
+
+def drop_summary_of(board_view, drop):
+    summary = board_view.drop_summary
+    assert summary is not None and summary.drop_player_id == drop.player_id
+    assert summary.result == board_view.selected_player_result
+    label = next(row.roster_decision for row in board_view.roster if row.player_id == drop.player_id)
+    assert summary.decision == label, "the drop summary and the roster label are one gated decision"
+    return summary
+
+
+def test_explicit_drop_refuted_raw_leader_is_not_the_answer_and_the_drop_is_held():
+    add = refuted_add()
+    ctx, drop = integrity_ctx(add)
+    board_view = drop_board(ctx, drop)
+    row = board_view.candidates[0]
+    explanation = row.comparison.explanation
+    assert row.player_id == add.player_id and row.net_improvement > 0 > explanation.reconciled_net
+    assert row.verdict == "DO_NOT_ADD" and row.recommended_action == "INSUFFICIENT EVIDENCE"
+    assert board_view.selected_player_result == f"HOLD {drop.player_name}", "never INSUFFICIENT EVIDENCE"
+    assert board_view.best_add_for_team_id is None
+    summary = drop_summary_of(board_view, drop)
+    assert summary.decision == "keep_on_measured_model" and summary.best_valid_replacement_id is None
+    assert summary.headline == (f"No supported or WATCH replacement exists for DROP {drop.player_name}; 1 positive raw "
+        f"model comparison did not pass the decision gates (1 DO NOT ADD). Keep {drop.player_name} under this model.")
+    # The rejected pair stays visible as subordinate evidence, with its numbers and the gate that rejected it.
+    raw = summary.highest_raw_comparison
+    assert raw.candidate_id == add.player_id == board_view.top_measured_candidate_id
+    assert raw.verdict == "DO_NOT_ADD" and raw.raw_net == row.net_improvement
+    assert raw.reconciled_net == explanation.reconciled_net
+    assert raw.reason == explanation.blocker and raw.reason.startswith("Explanation-consistency gate: ")
+
+
+def test_explicit_drop_best_valid_replacement_is_the_first_supported_pair_in_gate_aware_order():
+    from app.features.waivers.service import build_board
+    refuted = refuted_add(11)
+    supported = integrity_player(12, "C", ppg=33, games=2, pct=95, schedule_pct=10)
+    twin = integrity_player(10, "C", ppg=33, games=2, pct=95, schedule_pct=10)
+    watch = integrity_player(13, "C", ppg=34, games=2, pct=97, schedule_pct=10)
+    watch.current_season_games = watch.recent.games = 3
+    ctx, drop = integrity_ctx(refuted, extra=(supported, twin, watch))
+    board_view = drop_board(ctx, drop)
+    rows = {row.player_id: row for row in board_view.candidates}
+    assert rows[11].net_improvement > rows[13].net_improvement > rows[12].net_improvement == rows[10].net_improvement > 0
+    # The gate-aware tier precedes raw net; within a tier raw net, then the lower player ID.
+    assert [(row.player_id, row.verdict) for row in board_view.candidates] == [
+        (10, "SUPPORTED_ADD"), (12, "SUPPORTED_ADD"), (13, "WATCH_ONLY"), (11, "DO_NOT_ADD")]
+    summary = drop_summary_of(board_view, drop)
+    assert summary.decision == "review_replacement"
+    assert summary.best_valid_replacement_id == board_view.best_add_for_team_id == 10
+    assert summary.result == rows[10].recommended_action and summary.headline == rows[10].verdict_text
+    raw = summary.highest_raw_comparison
+    assert (raw.candidate_id, raw.verdict) == (11, "DO_NOT_ADD"), "the higher raw net never outranks the valid pair"
+    best = analyze_transactions(ctx).best_transaction
+    assert (best.add_player.player_id, best.drop_player.player_id) == (10, drop.player_id)
+    assert build_board(ctx, "fixture", "t1", ctx.mode, None).drop_summary is None, "explicit drops only"
+
+
+def test_explicit_drop_with_only_rejected_or_nonpositive_pairs_holds_instead_of_insufficient_evidence():
+    refuted = refuted_add(11)
+    weaker = integrity_player(12, "C", ppg=20, games=2, pct=60, schedule_pct=10)
+    ctx, drop = integrity_ctx(refuted, extra=(weaker,))
+    board_view = drop_board(ctx, drop)
+    assert [(row.player_id, row.verdict) for row in board_view.candidates] == [(12, "DO_NOT_ADD"), (11, "DO_NOT_ADD")]
+    assert board_view.candidates[0].net_improvement < 0 < board_view.candidates[1].net_improvement
+    assert board_view.selected_player_result == f"HOLD {drop.player_name}"
+    summary = drop_summary_of(board_view, drop)
+    assert summary.decision == "keep_on_measured_model"
+    assert summary.best_valid_replacement_id is None and summary.watch_candidate_id is None
+    assert summary.highest_raw_comparison.candidate_id == 11
+
+
+def test_explicit_drop_watch_only_answers_watch_and_is_never_promoted():
+    refuted = refuted_add(11)
+    watch = integrity_player(13, "C", ppg=34, games=2, pct=97, schedule_pct=10)
+    watch.current_season_games = watch.recent.games = 3
+    ctx, drop = integrity_ctx(refuted, extra=(watch,))
+    board_view = drop_board(ctx, drop)
+    rows = {row.player_id: row for row in board_view.candidates}
+    assert board_view.selected_player_result == "WATCH" and board_view.best_add_for_team_id is None
+    summary = drop_summary_of(board_view, drop)
+    assert summary.decision == "watch_replacement" and summary.best_valid_replacement_id is None
+    assert summary.watch_candidate_id == 13 and summary.headline == rows[13].verdict_text
+    assert summary.headline.startswith("WATCH ONLY — ")
+    assert summary.highest_raw_comparison.candidate_id == 11
+    # When the WATCH pair is itself the raw leader there is nothing else to explain.
+    watch.components.schedule = 90
+    watch.overall_score, watch.effective_weights = aggregate(watch.components, WEIGHTS)
+    summary = drop_summary_of(drop_board(ctx, drop), drop)
+    assert summary.watch_candidate_id == 13 and summary.highest_raw_comparison is None
+
+
+@pytest.mark.parametrize("delta", [.0005, -.0005])
+def test_explicit_drop_near_tie_keeps_its_verdict_and_is_not_promoted(delta):
+    add = integrity_player(11, "C", ppg=30, games=2, pct=90 + 2 * delta / (.25 / .9), schedule_pct=10)
+    ctx, drop = integrity_ctx(add)
+    board_view = drop_board(ctx, drop)
+    row = board_view.candidates[0]
+    assert row.verdict == "NEAR_TIE" and row.verdict_text.startswith("NEAR TIE — NO STRONG PREFERENCE")
+    assert board_view.selected_player_result == f"HOLD {drop.player_name}"
+    summary = drop_summary_of(board_view, drop)
+    assert summary.decision == "keep_on_measured_model" and summary.best_valid_replacement_id is None
+    raw = summary.highest_raw_comparison
+    assert (raw.candidate_id, raw.verdict) == (11, "NEAR_TIE") and raw.reason.startswith("Near tie: ")
+
+
+def test_explicit_drop_without_a_measured_comparison_cannot_be_evaluated():
+    from app.features.waivers.service import build_board
+    ctx = two_injured_in_il_context()
+    injured = ctx.players[4]
+    board_view = build_board(ctx, "fixture", "t1", ctx.mode, injured.player_id)
+    assert board_view.candidates and all(row.net_improvement is None for row in board_view.candidates)
+    assert board_view.top_measured_candidate_id is None
+    assert board_view.selected_player_result == "CANNOT EVALUATE"
+    summary = drop_summary_of(board_view, injured)
+    assert summary.decision == "unavailable" and summary.highest_raw_comparison is None
+    assert summary.best_valid_replacement_id is None and summary.watch_candidate_id is None
+    assert summary.headline.startswith(f"No measured comparison exists for DROP {injured.player_name}: ")
+    assert "occupies an injury slot" in summary.headline
+
+
+def test_explicit_drop_summary_card_impact_and_verdict_are_one_exact_pair(monkeypatch):
+    from app.features.waivers.service import evaluate_pair, get_impact, get_waivers
+    refuted = refuted_add(11)
+    supported = integrity_player(12, "C", ppg=33, games=2, pct=95, schedule_pct=10)
+    ctx, drop = integrity_ctx(refuted, extra=(supported,))
+    monkeypatch.setattr("app.features.waivers.service.load_context", AsyncMock(return_value=ctx))
+    board_view = asyncio.run(get_waivers(None, "fixture", "t1", ctx.mode, drop.player_id))
+    summary = drop_summary_of(board_view, drop)
+    raw = summary.highest_raw_comparison
+    assert (summary.best_valid_replacement_id, raw.candidate_id) == (12, 11)
+    for pid in (12, 11):
+        card = next(row for row in board_view.candidates if row.player_id == pid)
+        impact = asyncio.run(get_impact(None, "fixture", "t1", pid, drop.player_id, ctx.mode))
+        assert impact.comparison == impact.candidate.comparison == card.comparison
+        assert impact.comparison.player_id == drop.player_id, "the selected drop stays fixed"
+        assert (impact.candidate.verdict, impact.candidate.verdict_text) == (card.verdict, card.verdict_text)
+        assert evaluate_pair(ctx, ctx.players[pid], drop.player_id).pair.comparison == card.comparison
+    card = next(row for row in board_view.candidates if row.player_id == 11)
+    assert (raw.raw_net, raw.reconciled_net, raw.verdict, raw.reason) == (card.comparison.net_improvement,
+        card.comparison.explanation.reconciled_net, card.verdict, card.comparison.explanation.blocker)
+
+
 def test_decision_modules_contain_no_player_specific_rules():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "app" / "features" / "waivers"

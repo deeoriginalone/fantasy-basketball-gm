@@ -291,8 +291,9 @@ longer required; earlier mobile results in the records remain historical
 evidence, and the mobile tests are kept.
 
 **Phase 7: Decision integrity** (model `waiver-decision-integrity-phase7`;
-implemented and validated locally on 2026-11-21, **NOT deployed**; no
-migration; see the [2026-11-21 session record](docs/sessions/2026-11-21.md))
+**deployed** 2026-11-21 16:36 UTC and verified read-only; no migration;
+rollback images are tagged `pre-phase7`; see the
+[2026-11-21 session record](docs/sessions/2026-11-21.md))
 makes every recommendation explain itself and refuses those whose
 explanation does not hold:
 
@@ -324,6 +325,19 @@ explanation does not hold:
   - a reason instead of "n/a";
   - lineup gaps in dates;
   - "Watch only" vs "Keep" roster labels.
+
+**Phase 7.1: Compare a Specific Drop answers from the gate** (model
+`waiver-decision-integrity-phase7.1`; implemented and validated locally
+2026-11-21; **NOT deployed and NOT committed**; see the
+[current-state report](docs/status/current-state.md)):
+
+- The selected drop's answer comes from a backend `drop_summary` built from
+  the same gated pair decisions as the cards and the roster label: BEST
+  VALID REPLACEMENT, WATCH, HOLD <drop> or CANNOT EVALUATE.
+- The raw-net leader appears only as a subordinate "HIGHEST RAW MODEL
+  COMPARISON — not a recommendation", with its verdict, raw and reconciled
+  net, the gate reason and an exact-pair Analyze. It is never called the top
+  option.
 
 **Phase 6: Waiver horizons & evidence** (model
 `waiver-horizon-evidence-phase6`; **deployed** 2026-11-14 21:30 UTC and

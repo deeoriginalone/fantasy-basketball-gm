@@ -17,7 +17,7 @@ const apiOutput = ts.transpileModule(api, {
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const VERSION = "waiver-decision-integrity-phase7";
+const VERSION = "waiver-decision-integrity-phase7.1";
 const TWO_WEEK = "Two-week move. Main reason: Schedule: 7 games vs 5 games in Next 14 Days, +1.09 index points.";
 
 function load(states = []) {
@@ -324,6 +324,10 @@ const board = (dropId = 2, mode = "this_week", order = [1, 3], best_add_for_team
   waiver_rules: ["Continual rolling list", "2-day waiver period", "4 adds/week", "Daily - Today deadline"],
   selected_player_result: "WATCH",
   candidates: order.map((id) => candidate(id, id === 1 ? "Available Center" : "Overall Guard", drop(dropId, id === 1 ? (dropId === 2 ? 15 : -5) : 4))),
+  // The backend's gated answer for an explicitly selected drop (null without one).
+  drop_summary: dropId === null ? null : { drop_player_id: dropId, drop_player_name: dropId === 2 ? "Weak Guard" : "Bench Forward",
+    decision: "watch_replacement", result: "WATCH", headline: `WATCH ONLY — ${order[0] === 1 ? "Available Center" : "Overall Guard"}.`,
+    best_valid_replacement_id: null, watch_candidate_id: order[0], highest_raw_comparison: null },
   excluded_count: 2, unknown_availability_count: 1, limitations: ["No projections."],
   data_quality: { roster: { ...evidence, state: "stale", detail: "Stale roster." } },
   coverage, data_gaps: [],
@@ -441,7 +445,8 @@ test("replacement cards show a single measured drop, evidence, ranking blend and
   assert.match(html, /Effective weight/);
   assert.match(html, /recent evidence is partial/);
   assert.match(html, /Yahoo status is unknown/);
-  assert.match(html, /Top measured option: not established · limited evidence/);
+  assert.match(html, /<p class="waiver-outcome"><strong>WATCH<\/strong><\/p><p class="waiver-option-headline">WATCH ONLY — Available Center\.<\/p>/);
+  assert.doesNotMatch(html, /Top measured option/);
 });
 
 test("current role shows measured deltas, independent missing inputs, status and schedule coverage", () => {
@@ -594,6 +599,10 @@ test("backend-owned HOLD and Yahoo calculation evidence are rendered without a f
   const { Replacements } = load();
   const result = board();
   result.selected_player_result = "HOLD Weak Guard";
+  result.drop_summary = { ...result.drop_summary, decision: "keep_on_measured_model", result: "HOLD Weak Guard", watch_candidate_id: null,
+    headline: "No supported or WATCH replacement exists for DROP Weak Guard; no comparison improves the measured roster index. Keep Weak Guard under this model.",
+    highest_raw_comparison: { candidate_id: 1, player_name: "Available Center", verdict: "DO_NOT_ADD", raw_net: -5, reconciled_net: -5,
+      reason: "DO NOT ADD — Best comparison is ADD Available Center / DROP Weak Guard, net -5.00. Keep your current roster under this model." } };
   result.candidates = [candidate(1, "Available Center", drop(2, -5), {
     recommended_action: "PASS", recommended_action_type: "HOLD", action_label: "HOLD: No sufficiently supported move currently improves the roster.",
     recent: {
@@ -619,7 +628,11 @@ test("compare a specific drop renders the backend order: a supported move before
   const supported = candidate(3, "Supported Guard", drop(4, .728), { recommended_action: "ADD", recommended_action_type: "ADD_DROP",
     action_label: "ADD Supported Guard + DROP Bench Forward: Your roster is full.", evidence_blockers: [] });
   const watch = candidate(1, "Watch Center", drop(4, .847));
-  const replacement = { ...board(4), candidates: [supported, watch], best_add_for_team_id: 3, top_measured_candidate_id: 1, selected_player_result: "ADD" };
+  const replacement = { ...board(4), candidates: [supported, watch], best_add_for_team_id: 3, top_measured_candidate_id: 1, selected_player_result: "ADD",
+    drop_summary: { ...board(4).drop_summary, decision: "review_replacement", result: "ADD", watch_candidate_id: null,
+      headline: "SUPPORTED ADD — ADD Supported Guard / DROP Bench Forward, net +0.73 roster-index points.", best_valid_replacement_id: 3,
+      highest_raw_comparison: { candidate_id: 1, player_name: "Watch Center", verdict: "WATCH_ONLY", raw_net: .847, reconciled_net: .847,
+        reason: "Sample gate: Watch Center 2 games this season and 2 in the last 14 days." } } };
   const cards = (html) => [...html.matchAll(/<p class="waiver-kicker">Replacement option (\d)<\/p><h4>([^<]+)<\/h4><\/div><span class="waiver-verdict[^"]*">([^<]+)<\/span>/g)]
     .map(([, rank, name, decision]) => `${rank}. ${name}: ${decision}`);
   const html = render(Replacements, { board: replacement, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
@@ -627,7 +640,10 @@ test("compare a specific drop renders the backend order: a supported move before
   assert.match(html, /Each comparison uses only the selected drop: Bench Forward\./);
   assert.equal(html.match(/<dt>Selected drop<\/dt><dd>Bench Forward<\/dd>/g).length, 2, "every card compares the same selected drop");
   assert.match(html, /Ordered by the backend: supported moves first, then WATCH, HOLD and insufficient evidence; within each group by measured net improvement\./);
-  assert.match(html, /Top measured option: Watch Center/);
+  // The higher-net WATCH is never the answer: the supported pair is, and the WATCH stays subordinate raw evidence.
+  assert.match(html, /BEST VALID REPLACEMENT:<\/span> <strong>Supported Guard<\/strong> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span>/);
+  assert.match(html, /HIGHEST RAW MODEL COMPARISON — not a recommendation<\/p><p><strong>Watch Center<\/strong> <span class="waiver-verdict is-watch_only">WATCH ONLY<\/span>/);
+  assert.doesNotMatch(html, /Top measured option/);
   // The page renders the backend order as received and never re-sorts by net.
   const asReceived = render(Replacements, { board: { ...replacement, candidates: [watch, supported] }, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
   assert.deepEqual(cards(asReceived), ["1. Watch Center: WATCH ONLY", "2. Supported Guard: SUPPORTED ADD"]);
@@ -1418,7 +1434,12 @@ const refutedExplanation = () => explanation("Star Center", 1.026, {
   primary_tradeoff: "Production cost: 22.6 vs 30.3 Yahoo FP/G, -0.31 index points.",
   blocker: "Explanation gate: schedule: 66 x 22.6 = 1490.9 vs 63 x 30.3 = 1908.3 window Yahoo fantasy points: the extra games do not offset the lower production. Without the unsupported claim the net is -0.3647.",
 });
-const replacementBoard = (row) => ({ ...board(7), candidates: [row], top_measured_candidate_id: null, selected_player_result: "Keep: no supported replacement" });
+const replacementBoard = (row) => ({ ...board(7), candidates: [row], top_measured_candidate_id: row.player_id, selected_player_result: "HOLD Star Center",
+  drop_summary: { drop_player_id: 7, drop_player_name: "Star Center", decision: "keep_on_measured_model", result: "HOLD Star Center",
+    headline: "No supported or WATCH replacement exists for DROP Star Center; 1 positive raw model comparison did not pass the decision gates. Keep Star Center under this model.",
+    best_valid_replacement_id: null, watch_candidate_id: null,
+    highest_raw_comparison: { candidate_id: row.player_id, player_name: row.player_name, verdict: row.verdict, raw_net: row.net_improvement,
+      reconciled_net: row.comparison.explanation.reconciled_net, reason: row.comparison.explanation.blocker ?? row.verdict_text } } });
 const replacement = (verdict, net, explained, tweaks = {}) => candidate(1, "Available Center", { ...drop(4, net), player_id: 7, player_name: "Star Center", explanation: explained },
   { verdict, recommended_action: "INSUFFICIENT EVIDENCE", recommended_action_type: "INSUFFICIENT_EVIDENCE", action_label: "", ...tweaks });
 
@@ -1542,6 +1563,85 @@ test("a near tie is labeled NEAR TIE with its exact net, never as an improvement
   assert.match(html, /<dt>Net improvement<\/dt><dd>\+0\.0013 index points<\/dd>/, "a tiny net keeps its sign and size instead of +0.00");
   assert.match(html, /<strong>Near tie — no strong preference\.<\/strong> Near-tie gate:/);
   assert.doesNotMatch(html, /Positive measured roster-index change|is-supported_add/);
+});
+
+// --- Phase 7.1: Compare a Specific Drop answers from the backend's gated drop summary --------------------------------
+// Deployed-acceptance regression (2026-11-21): the header named the highest raw-net pair "Top measured option" although
+// the explanation gate rejects that exact pair (DO NOT ADD). Fixtures are synthetic; the numbers mirror the trace.
+const refutedRow = () => candidate(1, "Available Center",
+  { ...drop(4, 1.025611), explanation: { ...refutedExplanation(), drop_player_id: 4, drop_name: "Bench Forward", reconciled_net: -.388 } },
+  { verdict: "DO_NOT_ADD", recommended_action: "INSUFFICIENT EVIDENCE", recommended_action_type: "INSUFFICIENT_EVIDENCE", action_label: "",
+    verdict_text: "DO NOT ADD — ADD Available Center / DROP Bench Forward shows +1.03 index points, but the schedule claim does not hold.",
+    evidence_blockers: [refutedExplanation().blocker] });
+const supportedRow = () => candidate(3, "Overall Guard", drop(4, .41), { recommended_action: "ADD", recommended_action_type: "ADD_DROP",
+  evidence_blockers: [], verdict_text: "SUPPORTED ADD — ADD Overall Guard / DROP Bench Forward, net +0.41 roster-index points." });
+const rawOf = (row) => ({ candidate_id: row.player_id, player_name: row.player_name, verdict: row.verdict, raw_net: row.net_improvement,
+  reconciled_net: row.comparison.explanation.reconciled_net, reason: row.comparison.explanation.blocker });
+const dropAnswer = (tweaks = {}) => ({ drop_player_id: 4, drop_player_name: "Bench Forward", decision: "keep_on_measured_model",
+  result: "HOLD Bench Forward", headline: "No supported or WATCH replacement exists for DROP Bench Forward; 1 positive raw model comparison did not pass the decision gates (1 DO NOT ADD). Keep Bench Forward under this model.",
+  best_valid_replacement_id: null, watch_candidate_id: null, highest_raw_comparison: null, ...tweaks });
+const bestValidAnswer = () => dropAnswer({ decision: "review_replacement", result: "ADD", headline: supportedRow().verdict_text,
+  best_valid_replacement_id: 3, highest_raw_comparison: rawOf(refutedRow()) });
+const dropView = (candidates, drop_summary, onAnalyze = () => {}) => render(load().Replacements, { board: { ...board(4), candidates,
+  drop_summary, top_measured_candidate_id: 1, selected_player_result: drop_summary?.result ?? "WATCH" }, loading: false, error: "", selectedDropId: 4, onAnalyze });
+const answerHeader = (html) => html.slice(0, html.indexOf('<div class="waiver-replacement-list">'));
+// Expands hook-free function components so a test can call a rendered button's handler without a DOM.
+const expand = (node) => Array.isArray(node) ? node.flatMap(expand) : !node || typeof node !== "object" ? []
+  : typeof node.type === "function" ? expand(node.type(node.props)) : [node, ...expand(node.props?.children)];
+
+test("compare a specific drop: a rejected raw leader is never the answer; HOLD the drop and keep the raw comparison subordinate", () => {
+  const row = refutedRow();
+  const held = candidate(3, "Overall Guard", drop(4, -1.2), { recommended_action: "PASS", recommended_action_type: "HOLD", evidence_blockers: [] });
+  const summary = dropAnswer({ highest_raw_comparison: rawOf(row) });
+  const html = dropView([held, row], summary);
+  const header = answerHeader(html);
+  // A: no favorable "top" wording for the rejected pair; the primary answer is HOLD <selected drop>.
+  assert.doesNotMatch(html, /Top measured option|BEST VALID REPLACEMENT/);
+  assert.match(header, /<p class="waiver-outcome"><strong>HOLD Bench Forward<\/strong><\/p><p class="waiver-option-headline">No supported or WATCH replacement exists for DROP Bench Forward;/);
+  // B: the rejected comparison stays visible below the answer with its verdict, both nets and the rejection reason.
+  const raw = header.slice(header.indexOf("HIGHEST RAW MODEL COMPARISON"));
+  assert.ok(header.indexOf("HOLD Bench Forward") < header.indexOf("HIGHEST RAW MODEL COMPARISON — not a recommendation"));
+  assert.match(raw, /<p><strong>Available Center<\/strong> <span class="waiver-verdict is-do_not_add">DO NOT ADD<\/span><\/p>/);
+  assert.match(raw, /<dt>Raw net<\/dt><dd>\+1\.03 index points<\/dd>/);
+  assert.match(raw, /<dt>Reconciled net<\/dt><dd>-0\.39 index points<\/dd>/);
+  assert.match(raw, /<strong>Why it is not the answer:<\/strong> Explanation gate: schedule: 66 x 22\.6 = 1490\.9 vs 63 x 30\.3 = 1908\.3/);
+  // D + E: the selected drop stays fixed and Analyze opens exactly the displayed add/drop pair.
+  assert.match(html, /Each comparison uses only the selected drop: Bench Forward\./);
+  assert.match(raw, />Analyze ADD Available Center \/ DROP Bench Forward<\/button>/);
+  const opened = [];
+  const { SelectedDropAnswer } = load();
+  const buttons = expand(SelectedDropAnswer({ board: { ...board(4), candidates: [held, row], drop_summary: summary },
+    selectedDropId: 4, onAnalyze: (id) => opened.push(id) })).filter((node) => node.type === "button");
+  assert.equal(buttons.length, 1);
+  buttons[0].props.onClick();
+  assert.deepEqual(opened, [1], "the raw comparison opens ADD Available Center / DROP Bench Forward");
+});
+
+test("compare a specific drop: a supported pair below a rejected higher raw net is the BEST VALID REPLACEMENT", () => {
+  const header = answerHeader(dropView([supportedRow(), refutedRow()], bestValidAnswer()));
+  assert.match(header, /<p class="waiver-outcome"><strong>ADD<\/strong><\/p><p class="waiver-best-valid"><span class="waiver-kicker">BEST VALID REPLACEMENT:<\/span> <strong>Overall Guard<\/strong> <span class="waiver-verdict is-supported_add">SUPPORTED ADD<\/span><\/p>/);
+  assert.match(header, /SUPPORTED ADD — ADD Overall Guard \/ DROP Bench Forward, net \+0\.41 roster-index points\./);
+  assert.match(header, /HIGHEST RAW MODEL COMPARISON — not a recommendation<\/p><p><strong>Available Center<\/strong> <span class="waiver-verdict is-do_not_add">DO NOT ADD<\/span>/);
+  assert.ok(header.indexOf("BEST VALID REPLACEMENT") < header.indexOf("HIGHEST RAW MODEL COMPARISON"), "the valid answer comes first");
+  assert.doesNotMatch(header, /Top measured option/);
+});
+
+test("compare a specific drop renders the backend answer verbatim: no browser ranking, and a missing or inconsistent answer fails closed", () => {
+  const supported = supportedRow();
+  const row = refutedRow();
+  // I: the answer is the same whatever order the cards arrive in; the page looks players up by ID and never ranks.
+  assert.equal(answerHeader(dropView([row, supported], bestValidAnswer())), answerHeader(dropView([supported, row], bestValidAnswer())));
+  const answer = source.slice(source.indexOf("export function SelectedDropAnswer"), source.indexOf("export function Replacements"));
+  assert.ok(answer.length > 0);
+  assert.doesNotMatch(answer, /\.sort\(|Math\.(max|min)\(|net_improvement|recommended_action/);
+  // A supported card never becomes the answer on its own: without the backend answer nothing is named.
+  for (const html of [dropView([supported, row], null), dropView([supported, row], { ...bestValidAnswer(), drop_player_id: 2 })]) {
+    assert.match(html, /<p class="notice notice-error" role="alert">The selected-drop answer is missing from this response; no replacement is named\.<\/p>/);
+    assert.doesNotMatch(answerHeader(html), /waiver-outcome|BEST VALID REPLACEMENT|HIGHEST RAW MODEL COMPARISON/);
+  }
+  const notSupported = dropView([{ ...supported, verdict: "WATCH_ONLY" }, row], bestValidAnswer());
+  assert.match(notSupported, /role="alert">The selected-drop answer was withheld: its best valid replacement is not a SUPPORTED ADD card in this response\.<\/p>/);
+  assert.doesNotMatch(answerHeader(notSupported), /BEST VALID REPLACEMENT/);
 });
 
 test("a featured supported card whose backend verdict is not SUPPORTED ADD fails closed", () => {
