@@ -107,21 +107,38 @@ production blend deployment (2026-11-24 10:32 UTC) are complete (see the
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Phase 8 is deployed and verified** (`waiver-season-blend-phase8`,
-   2026-11-24 10:32 UTC, commit `d16607f`, `api` and `frontend` only;
-   rollback tags `pre-phase8`); do not repeat it.
-   - Acceptance was GET-only against read-only shadows of the same data. The
-     live payloads equal the Phase 8 shadow, the database is unchanged, and
-     there were 0 refresh, provider or non-GET requests. Evidence:
-     `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md`.
-   - The saved Yahoo evidence (2026-11-21 15:50 refresh) is past its 24-hour
-     rule, so live boards withhold rankings and pair decisions (INSUFFICIENT
-     EVIDENCE) until the user's next REFRESH WAIVER DATA. The weekly model
-     production values and their buckets already show. Never refresh as
-     part of a deploy.
-   - **Rollback, only if ever needed:** retag both `pre-phase8` images as
-     `latest`, then `docker compose up -d --no-deps api frontend`. No
-     database rollback is needed.
+1. **Immediate release action: the Phase 9 deployment closeout**
+   (`waiver-permanent-drop-phase9`, implemented and validated locally /
+   ready to deploy; authorized 2026-11-24 21:35 UTC). See item 7 and
+   `docs/sessions/2026-11-24.md`. `api` and `frontend` ship together; no
+   migration.
+   - **Unaccepted build in production:** a build of the uncommitted Phase 9
+     tree, made outside the release procedure, has served production since
+     21:24 UTC. Its origin is unknown, and the Phase 8 images were pruned.
+   - The closeout steps, in order:
+     1. Commit the source.
+     2. Rebuild Phase 8 from `2e6f379` as the `pre-phase9` rollback and prove
+        it.
+     3. Back up the database.
+     4. Compare read-only Phase 8 and Phase 9 shadows of the current snapshot.
+     5. Rebuild Phase 9 from the commit.
+     6. Accept it GET-only.
+   - **Rollback:** retag both `pre-phase9` images as `latest`, then
+     `docker compose up -d --no-deps api frontend`. No database rollback is
+     needed. `pre-phase8` holds Phase 7.1.
+   - **Phase 8 is the last verified deployment**
+     (`waiver-season-blend-phase8`, 2026-11-24 10:32 UTC, commit `d16607f`,
+     `api` and `frontend` only); do not repeat it.
+   - Phase 8 acceptance was GET-only against read-only shadows of the same
+     data. The live payloads equal the Phase 8 shadow, the database is
+     unchanged, and there were 0 refresh, provider or non-GET requests.
+     Evidence: `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md`.
+   - **Latest data refresh:** REFRESH WAIVER DATA ran from an open `/waivers`
+     page on 2026-11-24 at 21:24:35 UTC (job `f56f60744a47`, SUCCEEDED). It
+     was not part of a deployment. Yahoo evidence is fresh until about
+     21:24 UTC on 2026-11-25, and game logs run through 2026-11-23. An
+     earlier user refresh ran at 16:24–16:28 UTC (job `90afb1dacea3`). Never
+     refresh as part of a deploy.
    - **Build note:** `backend/requirements.txt` uses version ranges. When the
      pip layer is not cached, a rebuild picks up new releases: on 2026-11-24,
      fastapi 0.165.0, pydantic 2.14.4 and SQLAlchemy 2.1.9. Validate the
@@ -211,12 +228,18 @@ may run as a side effect of review or documentation work.
 
    **Remaining method questions now that Phase 8 is deployed** (decisions only;
    nothing changes without approval):
-   1. **Short-horizon permanent-drop policy** (WC-18): a Next 7 or Next 14
-      stream can permanently drop a much higher current-season producer
-      (Jarrett Allen 30.3 vs Keldon Johnson 20.2 FP/G on 2026-11-21). The
-      card shows "Dropping is permanent"; whether such a stream should be
-      supported is a policy decision.
-   2. **Schedule component scaling:** the schedule component is the
+   1. **Short-horizon permanent-drop policy** (WC-18): **DECIDED, implemented
+      and validated locally, ready to deploy (2026-11-24, Phase 9; the
+      deployment closeout is item 1).** A weekly
+      stream that leans on a schedule edge must cover the drop's production
+      above the best available player over his remaining games
+      (replacement break-even in Yahoo FP). Otherwise it is HOLD / DO NOT ADD,
+      and the optimizer moves to a cheaper drop. Evidence:
+      `qa-work/2026-11-24-permanent-drop-audit/`. Remaining: the deployment
+      closeout (item 1). Known limit: remaining games run to the end
+      of the NBA regular season, not the fantasy league's end.
+   2. **Next independent method decision: schedule component scaling.** The
+      schedule component is the
       percentile of an integer game count, so 1–3 games can swing it by
       40–87 points. The Phase-7 gate stops claims that fail in Yahoo points.
       Rescaling the component is a method decision.

@@ -73,6 +73,7 @@ from app.features.waivers.contracts import (
     FreshnessItem,
     IdentityCoverage,
     InjuryMoveOption,
+    LowerCostDrop,
     MappingWorklistItem,
     Mode,
     NeedOption,
@@ -111,9 +112,14 @@ from app.features.waivers.explanation import (
     EXPLANATION_GATE,
     NEAR_TIE_GATE,
     NEAR_TIE_NET,
+    PERMANENT_DROP_GATE,
     alternatives,
     drop_choice_text,
     explain_comparison,
+    permanent_drop_blocked,
+    permanent_drop_label,
+    permanent_drop_note,
+    permanent_drop_verdict,
     signed,
 )
 from app.features.waivers.production import PRIOR_GAMES, season_blend
@@ -964,6 +970,9 @@ def gate_category(note: str, mode: Mode) -> str:
             "(for example a schedule edge smaller than the production loss)")
     if note.startswith(f"{NEAR_TIE_GATE}:"):
         return f"{NEAR_TIE_GATE}: net below the {NEAR_TIE_NET:.3f} display-stability threshold (no strong preference)"
+    if note.startswith(f"{PERMANENT_DROP_GATE}:"):
+        return (f"{PERMANENT_DROP_GATE}: the window gain is smaller than the dropped player's production above the best "
+            "available player over his remaining scheduled games")
     return note
 
 
@@ -1399,7 +1408,11 @@ def _compare_pair(ctx: Context, player: Candidate, drop_id: int) -> DropOption:
             mode=ctx.mode, add=player, drop=dropped, comparison=option,
             window=(player.schedule.window_start, player.schedule.window_end),
             omitted=omitted_components(ctx, list(effective)),
-            recompute=lambda subset: _scores(ctx, before_total, after_total, subset)[2])
+            recompute=lambda subset: _scores(ctx, before_total, after_total, subset)[2],
+            replacement=None if ctx.mode == "ros" else lambda: replacement_level(ctx))
+        blocked = permanent_drop_blocked(option.explanation)
+        if blocked is not None:
+            blocked.lower_cost_drop = lower_cost_drop(ctx, player, dropped)
     return option
 
 
@@ -1428,6 +1441,56 @@ def omitted_components(ctx: Context, keys: list[str]) -> dict[str, str]:
 def explanation_supports(option: DropOption | None) -> bool:
     """The explanation-consistency gate for a positive comparison (comparisons built outside the engine carry none)."""
     return option is None or option.explanation is None or option.explanation.consistent
+
+
+def permanent_drop_supports(option: DropOption | None) -> bool:
+    """The permanent-drop gate: False only when a weekly schedule-led drop gives up more than its window gain."""
+    return option is None or permanent_drop_blocked(option.explanation) is None
+
+
+def replacement_level(ctx: Context) -> tuple[int, str, float] | None:
+    """Replacement level for the permanent-drop check: the best Phase-8 production value (Yahoo FP/G) among players the
+    freed roster spot could hold instead - off the manager roster, confirmed available, resolved identity, fresh
+    production evidence, verified Yahoo status and a sample that passes this horizon's gate."""
+    key = ("replacement_level",)
+    if ctx.memo is not None and key in ctx.memo:
+        return ctx.memo[key]
+    roster = set(ctx.roster_ids)
+    best = max((row for row in ctx.players.values() if row.player_id not in roster and availability_actionable(row)
+            and row.ranking_value.value is not None and identity_is_supported(row)
+            and row.data_quality.get("recent") is not None and row.data_quality["recent"].state == "available"
+            and status_gap(row, ctx.now) is None and sufficient_sample(row, ctx.mode)),
+        key=lambda row: (round(row.ranking_value.value, 2), -row.player_id), default=None)
+    level = (best.player_id, best.player_name, round(best.ranking_value.value, 2)) if best is not None else None
+    if ctx.memo is not None:
+        ctx.memo[key] = level
+    return level
+
+
+def lower_cost_drop(ctx: Context, add: Candidate, dropped: Candidate) -> LowerCostDrop | None:
+    """The best measured drop for the same add among roster players with a strictly lower production value whose
+    comparison is positive, explanation-consistent and clears the permanent-drop check. Values strictly decrease along
+    any chain of these lookups, so the memoized comparisons never recurse back to this pair."""
+    value = dropped.ranking_value.value
+    if value is None:
+        return None
+    best: DropOption | None = None
+    for player_id in swap_roster_ids(ctx):
+        other = ctx.players[player_id].ranking_value.value
+        if player_id == dropped.player_id or other is None or round(other, 2) >= round(value, 2):
+            continue
+        option = compare(ctx, add, player_id)
+        if (option.net_improvement is None or option.net_improvement <= 0 or not explanation_supports(option)
+                or not permanent_drop_supports(option)):
+            continue
+        if best is None or (option.net_improvement, -player_id) > (best.net_improvement, -best.player_id):
+            best = option
+    if best is None:
+        return None
+    check = best.explanation.permanent_drop if best.explanation is not None else None
+    return LowerCostDrop(player_id=best.player_id, player_name=best.player_name, net=best.net_improvement,
+        window_points_gap=best.explanation.window_points_gap if best.explanation is not None else None,
+        permanent_cost=check.permanent_cost if check is not None else 0.0)
 
 
 def _fill_components(ctx: Context, members: list[Candidate], keys: list[str], spots: int | None) -> Components:
@@ -1559,9 +1622,12 @@ def action_label(ctx: Context, row: Candidate, action: ActionType, drop_id: int 
         return f"ADD {row.player_name} + DROP {drop}: Your roster is full."
     if action == "WATCH":
         return "WATCH: The measured fit is positive, but the sample is too small for a supported move."
-    if action == "HOLD":
-        return "HOLD: No sufficiently supported move currently improves the roster."
     explanation = row.comparison.explanation if row.comparison is not None else None
+    if action == "HOLD":
+        blocked = permanent_drop_blocked(explanation) if (row.net_improvement or 0) > 0 else None
+        if blocked is not None:
+            return permanent_drop_label(explanation, blocked)
+        return "HOLD: No sufficiently supported move currently improves the roster."
     if explanation is not None and (row.net_improvement or 0) > 0 and not explanation.consistent:
         prefix = "NEAR TIE — NO STRONG PREFERENCE" if explanation.near_tie else "DO NOT ADD"
         return f"{prefix}: {explanation.statement}"
@@ -1628,6 +1694,9 @@ def transaction_verdict(ctx: Context, row: Candidate) -> tuple[TransactionVerdic
     if explanation is not None and explanation.near_tie:
         return "NEAR_TIE", (f"NEAR TIE — NO STRONG PREFERENCE. Best measured comparison: {pair}, net {net:+.4f} "
             f"(rounds to {net:+.2f}).")
+    blocked = permanent_drop_blocked(explanation) if net is not None and net > 0 else None
+    if blocked is not None:
+        return "DO_NOT_ADD", permanent_drop_verdict(pair, explanation, blocked)
     if action == "WATCH":
         blocker = next((note for note in row.evidence_blockers if note.startswith("Sample gate: ")), None)
         detail = blocker.removeprefix("Sample gate: ").split(". A supported move needs")[0] if blocker else "a small sample"
@@ -1745,8 +1814,12 @@ def enrich(ctx: Context, player: Candidate, drop_id: int | None = None) -> Candi
         if chosen is not None:
             return chosen
         # Without a supported pair the add shows its best comparison that the explanation gate does not refute: a
-        # positive index that fails in Yahoo fantasy points is not this add's best measured answer.
+        # positive index that fails in Yahoo fantasy points is not this add's best measured answer. A positive pair
+        # that clears the permanent-drop check (for example a WATCH against a cheaper drop) comes before one that
+        # would give up more than it gains.
         fallback = (next((option for option in options if option.net_improvement is not None
+                and option.net_improvement > 0 and explanation_supports(option) and permanent_drop_supports(option)), None)
+            or next((option for option in options if option.net_improvement is not None
                 and option.net_improvement > 0 and explanation_supports(option)), None)
             or next((option for option in options if option.net_improvement is not None
                 and (option.net_improvement <= 0 or explanation_supports(option))), None)
@@ -1798,6 +1871,13 @@ def enrich(ctx: Context, player: Candidate, drop_id: int | None = None) -> Candi
         # A positive index whose explanation cannot be reconciled (or a near tie) is never a supported move or WATCH.
         result.recommended_action = "INSUFFICIENT EVIDENCE"
         gate_notes.append(result.comparison.explanation.blocker or EXPLANATION_GATE)
+        if status_unverified:
+            gate_notes.append(status_gate_note(status_gaps))
+    elif not permanent_drop_supports(result.comparison):
+        # A weekly drop that gives up more than its window gain is HOLD before the sample gate: a larger sample could
+        # never make it supported, so it is never WATCH. An unverified Yahoo status still cannot assert HOLD.
+        result.recommended_action = "INSUFFICIENT EVIDENCE" if status_unverified else "PASS"
+        gate_notes.append(permanent_drop_note(result.comparison.explanation.permanent_drop))
         if status_unverified:
             gate_notes.append(status_gate_note(status_gaps))
     elif not sufficient_sample(result, ctx.mode) or (selected and not sufficient_sample(selected, ctx.mode)):
@@ -1915,6 +1995,8 @@ def evaluate_pair(ctx: Context, add: Candidate, drop_id: int) -> PairOutcome:
         blockers.append("Numeric swap impact is unavailable")
     elif pair.comparison.net_improvement > 0 and not explanation_supports(pair.comparison):
         blockers.append(gate_category(pair.comparison.explanation.blocker or EXPLANATION_GATE, ctx.mode))
+    elif pair.comparison.net_improvement > 0 and not permanent_drop_supports(pair.comparison):
+        blockers.append(gate_category(permanent_drop_note(pair.comparison.explanation.permanent_drop), ctx.mode))
     if pair.recommended_action == "INSUFFICIENT EVIDENCE":
         blockers.append("Phase-1 decision is INSUFFICIENT EVIDENCE")
     supported = not blockers and pair.recommended_action in {"ADD", "STREAM", "MUST ADD", "PASS"}
@@ -2895,8 +2977,11 @@ def build_drop_summary(ctx: Context, candidates: list[Candidate], drop_id: int, 
         rejected = Counter(row.verdict.replace("_", " ") for row in candidates
             if row.net_improvement is not None and row.net_improvement > 0)
         count = sum(rejected.values())
+        permanent = sum(row.net_improvement is not None and row.net_improvement > 0 and row.comparison is not None
+            and permanent_drop_blocked(row.comparison.explanation) is not None for row in candidates)
         detail = (f"{count} positive raw model comparison{'s' if count != 1 else ''} did not pass the decision gates ("
-            + ", ".join(f"{number} {verdict}" for verdict, number in sorted(rejected.items())) + ")"
+            + ", ".join(f"{number} {verdict}" for verdict, number in sorted(rejected.items()))
+            + (f"; {permanent} by the permanent-drop gate" if permanent else "") + ")"
             if count else "no comparison improves the measured roster index")
         decision, result = "keep_on_measured_model", f"HOLD {name}"
         headline = f"No supported or WATCH replacement exists for DROP {name}; {detail}. Keep {name} under this model."

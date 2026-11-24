@@ -20,6 +20,7 @@ import type {
   OptionForm,
   OptionPair,
   PairExplanation,
+  PermanentDropCheck,
   QualityState,
   RecentForm,
   RosterCapacity,
@@ -38,7 +39,7 @@ import type {
   WaiverSampleLabel,
 } from "./waiverTypes";
 
-const CURRENT_WAIVER_MODEL_VERSION = "waiver-season-blend-phase8";
+const CURRENT_WAIVER_MODEL_VERSION = "waiver-permanent-drop-phase9";
 // Only these Yahoo availability classes may back a supported move or a featured recommendation.
 const ACTIONABLE_AVAILABILITY = new Set<AvailabilityClass>([
   "CONFIRMED_FA", "CONFIRMED_WAIVER", "UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT",
@@ -575,6 +576,7 @@ function ExplanationDetails({ explanation }: { explanation: PairExplanation }) {
     <p><strong>Schedule in {explanation.horizon}</strong> ({explanation.window_start ?? "?"} to {explanation.window_end ?? "?"}, persisted schedule rows):{" "}
       {explanation.add_name} {explanation.add_games ?? "unknown"} games{explanation.drop_name ? ` · ${explanation.drop_name} ${explanation.drop_games ?? "unknown"} games` : ""}.
       {explanation.window_points_gap != null && ` Window Yahoo fantasy points (games × FP/G, before daily lineup limits): ${explanation.add_window_points?.toFixed(1)} vs ${explanation.drop_window_points?.toFixed(1)} (${explanation.window_points_gap > 0 ? "+" : ""}${explanation.window_points_gap.toFixed(1)}).`}</p>
+    <PermanentDropFacts check={explanation.permanent_drop} dropName={explanation.drop_name} />
     <p><strong>Starting slots:</strong> {explanation.starting_slots_before ?? "?"} → {explanation.starting_slots_after ?? "?"} of {explanation.starting_slots_required ?? "?"}{explanation.starting_slots_after != null && explanation.starting_slots_before != null && explanation.starting_slots_after > explanation.starting_slots_before ? " (fills a starting slot)" : " (no fit change)"}.</p>
     {without.length > 0 && <p><strong>Would it still win without…</strong> {without.map(([key, value]) => `${label(key)}: ${value == null ? "unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(4)}`}`).join(" · ")}.</p>}
     {omitted.length > 0 && <><h5>Not in this comparison</h5><ul>{omitted.map(([key, reason]) => <li key={key}>{label(key)}: {reason}</li>)}</ul></>}
@@ -590,6 +592,46 @@ function Tradeoffs({ explanation }: { explanation: PairExplanation | null }) {
   if (!explanation?.tradeoffs.length) return null;
   return <div className="waiver-tradeoff"><strong>{explanation.tradeoffs.length === 1 ? "Tradeoff" : "Tradeoffs"}:</strong>
     <ul>{explanation.tradeoffs.map((item) => <li key={item}>{item}</li>)}</ul></div>;
+}
+
+function fp(value: number): string {
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+}
+
+/** The backend's permanent-drop check for a weekly drop: the short-term window gain against what the drop gives up
+ * for the rest of the season. Every number is a backend field; the browser computes nothing. */
+function PermanentDropFacts({ check, dropName }: { check: PermanentDropCheck | null | undefined; dropName: string | null | undefined }) {
+  if (!check) return null;
+  const drop = dropName ?? "The drop";
+  const title = !check.supported ? "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN"
+    : check.permanent_cost > 0 ? "PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN" : "NO PERMANENT DROP COST";
+  const alternative = check.lower_cost_drop;
+  const best = check.replacement_name ?? "the best available player";
+  // drop_value and replacement_value are 2-dp backend values whose difference is drop_excess, so the shown
+  // arithmetic reproduces permanent_cost.
+  const dropValue = check.drop_value.toFixed(2), bestValue = check.replacement_value.toFixed(2);
+  const cost = check.drop_excess <= 0
+    ? `${check.permanent_cost.toFixed(1)} Yahoo FP: ${drop} (${dropValue} FP/G) is not above ${best} (${bestValue} FP/G)`
+    : check.drop_games_after_window === 0
+      ? `${check.permanent_cost.toFixed(1)} Yahoo FP: ${drop} has no scheduled games after this window`
+      : `(${dropValue} − ${bestValue} FP/G) × ${check.drop_games_after_window} games after this window = ${check.permanent_cost.toFixed(1)} Yahoo FP`;
+  const result = !check.supported ? "FAIL — the permanent drop cost exceeds the window gain"
+    : check.permanent_cost > 0 ? "PASS — the window gain covers the permanent drop cost" : "PASS — no permanent drop cost";
+  return <div className={`waiver-permanent-drop${check.supported ? "" : " is-blocked"}`} role="group" aria-label={`Permanent drop check: ${drop}`}>
+    <h5>{title}</h5>
+    <dl className="waiver-move-facts">
+      <div><dt>Short-term gain</dt><dd>{fp(check.window_gain)} Yahoo FP during {check.horizon} (window points, before daily lineup limits)</dd></div>
+      <div><dt>Permanent drop cost</dt><dd>{cost}</dd></div>
+      <div><dt>Drop vs best available</dt><dd>{drop} {dropValue} vs {best} {bestValue} Yahoo FP/G (model production)</dd></div>
+      <div><dt>Remaining games</dt><dd>{check.drop_rest_of_season_games} left this regular season: {check.drop_window_games} in this window, {check.drop_games_after_window} after it</dd></div>
+      <div><dt>Result</dt><dd>{result}</dd></div>
+      {check.drop_current_season_value != null && check.add_current_season_value != null && <div><dt>Current season</dt><dd>{drop} {check.drop_current_season_value.toFixed(1)} vs add {check.add_current_season_value.toFixed(1)} Yahoo FP/G</dd></div>}
+      {!check.supported && <div><dt>Lower-cost drop</dt><dd>{alternative
+        ? `${alternative.player_name}: net ${netDigits(alternative.net)}, window ${alternative.window_points_gap == null ? "unavailable" : `${fp(alternative.window_points_gap)} Yahoo FP`}${alternative.permanent_cost > 0 ? `, permanent drop cost ${alternative.permanent_cost.toFixed(1)} Yahoo FP` : ", no permanent drop cost"}`
+        : "None with a positive measured comparison for this add"}</dd></div>}
+    </dl>
+    <p>{check.detail}</p>
+  </div>;
 }
 
 /** "Why this drop?": the chosen drop against the next measured drops for the same add. */
@@ -619,6 +661,7 @@ function PairFacts({ option, mode, onDetails }: { option: DecisionOption; mode: 
       <div><dt>Primary reason</dt><dd>{pair.primary_reason || "No component improves the roster index."}</dd></div>
     </dl>
     <p className={`waiver-tradeoff${blocker ? " is-blocker" : ""}`}><strong>{blocker ? "Primary blocker" : "Primary tradeoff"}:</strong> {blocker ?? pair.primary_tradeoff ?? "None reported by the backend."}</p>
+    <PermanentDropFacts check={pair.permanent_drop} dropName={pair.drop_player_name} />
     <WhyThisDrop choice={pair.drop_choice} alternatives={pair.alternatives} />
     {pair.drop_player_name && <button className="button button-quiet" onClick={() => onDetails(option)}>Compare other drops: {option.player_name}</button>}
   </>;
@@ -946,6 +989,7 @@ function PairCard({ swap, mode, capacity, onAnalyze }: {
       {capacity && <li>Why a drop is required: {capacity.drop_requirement_reason}</li>}
     </ul>
     <Tradeoffs explanation={explanation} />
+    <PermanentDropFacts check={explanation?.permanent_drop} dropName={drop.player_name} />
     <WhyThisDrop choice={add.drop_choice} alternatives={add.drop_alternatives} />
     <details><summary>Exact calculation, risks and role evidence</summary>
       {explanation && <ExplanationDetails explanation={explanation} />}
@@ -1095,7 +1139,10 @@ function ReplacementCard({ candidate, rank, onAnalyze }: {
       ? <p className="waiver-outcome is-no-improvement"><strong>No measured improvement.</strong> This swap is a tradeoff, not a recommendation to replace the selected player.</p>
       : explanation && !explanation.consistent
         ? <p className="waiver-outcome is-no-improvement"><strong>{explanation.near_tie ? "Near tie — no strong preference." : "Positive index change not supported."}</strong> {explanation.blocker ?? explanation.statement}</p>
-        : <p className="waiver-outcome"><strong>Positive measured roster-index change.</strong> This is descriptive evidence, not a projection or guarantee.</p>)}
+        : explanation?.permanent_drop && !explanation.permanent_drop.supported
+          ? <p className="waiver-outcome is-no-improvement"><strong>Positive window gain, but the drop is permanent.</strong> {explanation.permanent_drop.detail}</p>
+          : <p className="waiver-outcome"><strong>Positive measured roster-index change.</strong> This is descriptive evidence, not a projection or guarantee.</p>)}
+    <PermanentDropFacts check={explanation?.permanent_drop} dropName={comparison?.player_name} />
     {candidate.add_only_impact && <p className="waiver-outcome"><strong>Dropping is optional.</strong> Without a drop: {number(candidate.add_only_impact.before_score)} → {number(candidate.add_only_impact.after_score)} ({signed(candidate.add_only_impact.net_improvement)}) using an open roster spot.</p>}
     {comparison && (explanation
       ? <details><summary>Exact calculation for this drop</summary><ExplanationDetails explanation={explanation} /></details>

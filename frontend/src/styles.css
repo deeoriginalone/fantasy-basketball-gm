@@ -814,4 +814,11 @@ h1, h2, p { margin-top: 0; }
 .waiver-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .waiver-option-reason { margin: 0 0 8px; font-size: .86rem; overflow-wrap: anywhere; }
 .waiver-tradeoff ul { margin: 4px 0 0; padding-left: 18px; }
+/* Permanent-drop check: backend window gain vs the permanent drop cost; a blocked drop uses the blocker colors. */
+.waiver-permanent-drop { min-width: 0; margin: 8px 0; padding: 8px 10px; border-left: 4px solid #417a9e; border-radius: 4px; background: #eef5fb; overflow-wrap: anywhere; }
+.waiver-permanent-drop.is-blocked { border-left-color: #b45309; background: #fff4e5; }
+.waiver-permanent-drop h5 { margin: 0 0 4px; font-size: .78rem; letter-spacing: .05em; }
+/* The tinted backgrounds need a darker label than --muted to keep 4.5:1 contrast. */
+.waiver-permanent-drop .waiver-move-facts dt { color: #4f5a55; }
+.waiver-permanent-drop p { margin: 4px 0 0; font-size: .86rem; }
 .waiver-buckets { margin: 4px 0 0; padding-left: 18px; font-size: .82rem; color: var(--muted, #687570); overflow-wrap: anywhere; }

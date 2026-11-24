@@ -39,6 +39,7 @@ from app.features.waivers.contracts import (
     availability_actionable,
     availability_class,
 )
+from app.features.waivers.explanation import permanent_drop_blocked, permanent_drop_note
 from app.features.waivers.production import PRIOR_GAMES, blend_label, blend_math, season_blend, weighted_blend
 from app.features.waivers.sample import SAMPLE_TIER_LABELS, sample_assessment, sufficient_sample
 from app.services.draft.player_status import recommendation_eligibility, status_is_supported, yahoo_status_label
@@ -265,6 +266,7 @@ def option_pair(row: Candidate) -> OptionPair | None:
         blocker=explanation.blocker if explanation is not None else None,
         consistent=bool(explanation and explanation.consistent), near_tie=bool(explanation and explanation.near_tie),
         alternatives=list(row.drop_alternatives), drop_choice=row.drop_choice,
+        permanent_drop=explanation.permanent_drop if explanation is not None else None,
     )
 
 
@@ -356,7 +358,9 @@ class _Builder:
             if quality is None or quality.state != "available":
                 items.append(text)
         if row.recommended_action_type == "HOLD":
-            items.append("Measured roster impact is not positive.")
+            blocked = permanent_drop_blocked(row.comparison.explanation if row.comparison is not None else None)
+            items.append(permanent_drop_note(blocked) if blocked is not None and (row.net_improvement or 0) > 0
+                else "Measured roster impact is not positive.")
         if not items and row.evidence_blockers:
             items.append(row.evidence_blockers[0])
         return list(dict.fromkeys(items))

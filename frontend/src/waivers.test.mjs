@@ -17,7 +17,7 @@ const apiOutput = ts.transpileModule(api, {
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const VERSION = "waiver-season-blend-phase8";
+const VERSION = "waiver-permanent-drop-phase9";
 const TWO_WEEK = "Two-week move. Main reason: Schedule: 7 games vs 5 games in Next 14 Days, +1.09 index points.";
 
 function load(states = []) {
@@ -1722,4 +1722,87 @@ test("option cards and details show the MODEL PRODUCTION VALUE with the backend 
   const detail = render(load().ProductionBuckets, { buckets: rookie.buckets });
   assert.equal(detail, '<ul class="waiver-buckets" aria-label="Production basis: each game counted once"><li>Recent current season (last 14 days): no games</li><li>Earlier current season: 3 games at 30.0 FP/G, 2026-10-21 to 2026-10-24 · 100%</li><li>Prior season: not used (no supported prior-season history)</li></ul>');
   assert.equal(render(load().ProductionBuckets, { buckets: [] }), "");
+});
+
+// -----------------------------------------------------------------------------------------------------------------
+// 2026-11-24 permanent-drop policy (model waiver-permanent-drop-phase9): a weekly schedule-led drop is supported only
+// when its window gain covers the drop's production above the best available player over his remaining games. Every
+// number below is a backend field; the browser computes nothing. Synthetic, name-neutral fixtures.
+// -----------------------------------------------------------------------------------------------------------------
+const PERMANENT_DETAIL = "Bench Forward is 5.9 Yahoo FP/G above the best available player (Waiver Wing, 30.0 vs 24.1); over his 60 remaining scheduled games after this window that is 356.4 Yahoo fantasy points given up permanently, more than the +14.0 window gain.";
+const permanentCheck = (tweaks = {}) => ({
+  horizon: "Next 7 Days", window_gain: 14, add_value: 18.51, drop_value: 30, add_current_season_value: 16.73,
+  drop_current_season_value: 29.73, replacement_player_id: 9, replacement_name: "Waiver Wing", replacement_value: 24.06,
+  drop_excess: 5.94, drop_rest_of_season_games: 62, drop_window_games: 2, drop_games_after_window: 60, permanent_cost: 356.4,
+  supported: false, lower_cost_drop: { player_id: 2, player_name: "Weak Guard", net: .230743, window_points_gap: 4.9, permanent_cost: 0 },
+  detail: PERMANENT_DETAIL, ...tweaks,
+});
+const permanentVerdict = "DO NOT ADD — ADD Available Center / DROP Bench Forward: +14.0 Yahoo fantasy points in Next 7 Days, but dropping Bench Forward permanently gives up 356.4 (5.9 FP/G above the best available player, Waiver Wing, over his 60 games after this window). Keep Bench Forward. Lower-cost drop with a positive measured comparison: Weak Guard (net +0.23, window +4.9 Yahoo FP).";
+const permanentRow = () => candidate(1, "Available Center",
+  { ...drop(4, .503714), explanation: explanation("Bench Forward", .503714, { drop_player_id: 4, permanent_drop: permanentCheck(),
+    tradeoffs: [`Dropping is permanent: ${PERMANENT_DETAIL}`], primary_tradeoff: `Dropping is permanent: ${PERMANENT_DETAIL}` }) },
+  { verdict: "DO_NOT_ADD", recommended_action: "PASS", recommended_action_type: "HOLD", verdict_text: permanentVerdict,
+    action_label: "HOLD: Keep Bench Forward. A +14.0 Yahoo FP edge in Next 7 Days does not cover the 356.4 Yahoo FP permanent drop cost.",
+    evidence_blockers: [`Permanent-drop gate: ${PERMANENT_DETAIL}`] });
+
+test("compare a specific drop: a blocked permanent drop shows the window gain, the drop cost and the lower-cost drop", () => {
+  const row = permanentRow();
+  const summary = dropAnswer({ headline: "No supported or WATCH replacement exists for DROP Bench Forward; 1 positive raw model comparison did not pass the decision gates (1 DO NOT ADD; 1 by the permanent-drop gate). Keep Bench Forward under this model.",
+    highest_raw_comparison: { ...rawOf(row), reconciled_net: .503714, reason: `Permanent-drop gate: ${PERMANENT_DETAIL}` } });
+  const html = dropView([row], summary);
+  assert.match(answerHeader(html), /<p class="waiver-outcome"><strong>HOLD Bench Forward<\/strong><\/p>/);
+  assert.ok(html.includes(`<strong>Why it is not the answer:</strong> Permanent-drop gate: ${PERMANENT_DETAIL}`));
+  const card = html.slice(html.indexOf('<div class="waiver-replacement-list">'));
+  assert.ok(card.includes(permanentVerdict), "the measured comparison is shown honestly with the backend verdict");
+  assert.ok(card.includes(`<p class="waiver-outcome is-no-improvement"><strong>Positive window gain, but the drop is permanent.</strong> ${PERMANENT_DETAIL}</p>`));
+  assert.doesNotMatch(card, /Positive measured roster-index change/, "a blocked drop is never presented as a positive change");
+  assert.match(card, /<div class="waiver-permanent-drop is-blocked" role="group" aria-label="Permanent drop check: Bench Forward"><h5>PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN<\/h5>/);
+  assert.match(card, /<dt>Short-term gain<\/dt><dd>\+14\.0 Yahoo FP during Next 7 Days \(window points, before daily lineup limits\)<\/dd>/);
+  // The arithmetic is the backend's own values, so it reproduces exactly: (30.00 - 24.06) x 60 = 356.4.
+  assert.match(card, /<dt>Permanent drop cost<\/dt><dd>\(30\.00 − 24\.06 FP\/G\) × 60 games after this window = 356\.4 Yahoo FP<\/dd>/);
+  assert.match(card, /<dt>Drop vs best available<\/dt><dd>Bench Forward 30\.00 vs Waiver Wing 24\.06 Yahoo FP\/G \(model production\)<\/dd>/);
+  assert.match(card, /<dt>Remaining games<\/dt><dd>62 left this regular season: 2 in this window, 60 after it<\/dd>/);
+  assert.match(card, /<dt>Result<\/dt><dd>FAIL — the permanent drop cost exceeds the window gain<\/dd>/);
+  assert.match(card, /<dt>Current season<\/dt><dd>Bench Forward 29\.7 vs add 16\.7 Yahoo FP\/G<\/dd>/);
+  assert.match(card, /<dt>Lower-cost drop<\/dt><dd>Weak Guard: net \+0\.23, window \+4\.9 Yahoo FP, no permanent drop cost<\/dd>/);
+  assert.doesNotMatch(html, /\b(risky|elite|premium|high-value)\b/i, "no unquantified labels");
+  const none = render(load().Replacements, { board: { ...board(4), candidates: [candidate(1, "Available Center",
+    { ...drop(4, .5), explanation: explanation("Bench Forward", .5, { permanent_drop: permanentCheck({ lower_cost_drop: null }) }) },
+    { verdict: "DO_NOT_ADD", recommended_action_type: "HOLD" })], drop_summary: summary, top_measured_candidate_id: 1,
+    selected_player_result: summary.result }, loading: false, error: "", selectedDropId: 4, onAnalyze() {} });
+  assert.match(none, /<dt>Lower-cost drop<\/dt><dd>None with a positive measured comparison for this add<\/dd>/);
+});
+
+test("the best move discloses its permanent drop: no cost against the waiver pool, or a cost the window gain covers", () => {
+  const analysis = transactionAnalysis(true);
+  const free = permanentCheck({ supported: true, window_gain: 4.9, drop_value: 23.04, drop_excess: -1.02, permanent_cost: 0,
+    lower_cost_drop: null, detail: "Bench Forward (23.0 Yahoo FP/G) is not above the best available player (Waiver Wing, 24.1), so dropping Bench Forward gives up no production the waiver pool cannot replace." });
+  const comparison = { ...analysis.best_transaction.comparison, explanation: { ...analysis.best_transaction.comparison.explanation, permanent_drop: free } };
+  analysis.best_transaction = { ...analysis.best_transaction, comparison };
+  const html = moves(analysis, pairBoard(analysis));
+  const start = html.indexOf('<div class="waiver-permanent-drop"');
+  const block = html.slice(start, html.indexOf("</p></div>", start));
+  assert.ok(start > 0, "the featured move shows the permanent-drop check");
+  assert.match(block, /<h5>NO PERMANENT DROP COST<\/h5>/);
+  assert.match(block, /<dt>Permanent drop cost<\/dt><dd>0\.0 Yahoo FP: Bench Forward \(23\.04 FP\/G\) is not above Waiver Wing \(24\.06 FP\/G\)<\/dd>/);
+  assert.match(block, /<dt>Result<\/dt><dd>PASS — no permanent drop cost<\/dd>/);
+  assert.doesNotMatch(block, /Lower-cost drop|× \d+ games/);
+  const covered = { ...comparison, explanation: { ...comparison.explanation, permanent_drop: permanentCheck({ supported: true, window_gain: 35,
+    drop_value: 24.56, drop_excess: .5, permanent_cost: 35, drop_games_after_window: 70, detail: "covered by the +35.0 window gain." }) } };
+  analysis.best_transaction = { ...analysis.best_transaction, comparison: covered };
+  const coveredHtml = moves(analysis, pairBoard(analysis));
+  assert.match(coveredHtml, /<h5>PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN<\/h5>/);
+  assert.match(coveredHtml, /<dt>Permanent drop cost<\/dt><dd>\(24\.56 − 24\.06 FP\/G\) × 70 games after this window = 35\.0 Yahoo FP<\/dd>/);
+  assert.match(coveredHtml, /<dt>Result<\/dt><dd>PASS — the window gain covers the permanent drop cost<\/dd>/);
+});
+
+test("other good options show a blocked permanent drop on the exact pair with the backend blocker", () => {
+  const result = fullRosterSupport((item) => item.player_id === 22 ? { ...item, verdict: "DO_NOT_ADD", headline: permanentVerdict,
+    blockers: [`Permanent-drop gate: ${PERMANENT_DETAIL}`], pair: optionPair({ net: .503714, window_points_gap: 14, permanent_drop: permanentCheck() }) } : null);
+  const html = otherOptions(result);
+  const wing = between(html, "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
+  assert.ok(wing.includes(`<strong>Primary blocker:</strong> Permanent-drop gate: ${PERMANENT_DETAIL}`));
+  assert.match(wing, /<div class="waiver-permanent-drop is-blocked" role="group"/);
+  assert.match(wing, /<dt>Short-term gain<\/dt><dd>\+14\.0 Yahoo FP during Next 7 Days/);
+  assert.match(wing, /<dt>Permanent drop cost<\/dt><dd>\(30\.00 − 24\.06 FP\/G\) × 60 games after this window = 356\.4 Yahoo FP<\/dd>/);
 });

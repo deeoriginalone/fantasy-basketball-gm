@@ -58,9 +58,12 @@ See the [gated follow-ups](docs/status/next-actions.md).
   labeled ADD, STREAM or MUST ADD. Incompatible model versions are not decision-ready; structured HTTP
   409 contract failures remain visible errors, never HOLD or empty-success
   fallbacks. A timeout shows WAIVER ANALYSIS TIMED OUT with RETRY ANALYSIS
-  and REFRESH WAIVER DATA, never raw proxy HTML. Production runs model
-  `waiver-season-blend-phase8` (Phase 8 deployed 2026-11-24 10:32 UTC; see
-  Phase 8 below). Earlier: Phase 7.1 deployed 2026-11-21 21:46 UTC, after
+  and REFRESH WAIVER DATA, never raw proxy HTML. The last verified
+  deployment is model `waiver-season-blend-phase8` (Phase 8, 2026-11-24
+  10:32 UTC; see Phase 8 below). Phase 9 (`waiver-permanent-drop-phase9`)
+  is implemented and validated locally and ready to deploy. A build of it
+  made outside the release procedure has served production since
+  2026-11-24 21:24 UTC and is not yet accepted. Earlier: Phase 7.1 deployed 2026-11-21 21:46 UTC, after
   Phase 7 at 16:36 UTC the same day; Phase 6 deployed
   2026-11-14, the explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and
   the API heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
@@ -327,6 +330,28 @@ explanation does not hold:
   - a reason instead of "n/a";
   - lineup gaps in dates;
   - "Watch only" vs "Keep" roster labels.
+
+**Phase 9 (implemented and validated locally / ready to deploy):
+short-horizon permanent-drop policy** (model `waiver-permanent-drop-phase9`;
+2026-11-24 read-only audit and test-first implementation; deployment
+closeout authorized 2026-11-24, acceptance pending; see
+[the session notes](docs/sessions/2026-11-24.md)):
+
+- A Rest of Week, Next 7 Days or Next 14 Days ADD + DROP whose positive net
+  leans on a schedule edge is supported only when its window Yahoo FP cover
+  the drop's production above the best available player over the drop's
+  remaining games. Otherwise it is HOLD / DO NOT ADD (never WATCH), and the
+  optimizer uses a cheaper drop for the same add when one is supported.
+- Why: the weekly best moves dropped a 30 FP/G roster player for +2 to +28
+  window FP, about 356–403 Yahoo FP given up over his remaining games, while
+  drops at or below replacement level supported the same adds.
+- The page shows only backend facts:
+  - the short-term gain;
+  - the permanent drop cost as `(drop FP/G − replacement FP/G) × games after
+    the window = Yahoo FP`;
+  - the drop against the best available player, and the remaining games;
+  - PASS / FAIL, current-season values and any lower-cost drop.
+- Rest of Season Outlook, no-drop additions and IL moves are unchanged.
 
 **Phase 8: weekly production season blend** (model
 `waiver-season-blend-phase8`; 2026-11-24 read-only audit and test-first

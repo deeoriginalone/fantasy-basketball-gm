@@ -3806,7 +3806,8 @@ def test_explicit_drop_summary_card_impact_and_verdict_are_one_exact_pair(monkey
 def test_decision_modules_contain_no_player_specific_rules():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "app" / "features" / "waivers"
-    names = ("Allen", "Dunn", "Jackson", "Keldon", "Dončić", "Doncic", "DeRozan", "Huerter")
+    names = ("Allen", "Dunn", "Jackson", "Keldon", "Dončić", "Doncic", "DeRozan", "Huerter", "Eason", "Brooks", "Siakam",
+        "Powell", "Larsson", "Jakučionis", "Jakucionis", "Wolf", "LaVine", "Goodwin", "Risacher")
     for module in ("service.py", "explanation.py", "decision_support.py", "sample.py", "capacity.py", "contracts.py",
             "production.py"):
         text = (root / module).read_text()
@@ -4031,3 +4032,254 @@ def test_a_better_production_estimate_never_turns_a_small_recent_sample_into_a_s
         assert pair.verdict == "WATCH_ONLY" and pair.recommended_action_type == "WATCH", recent_games
         assert any(note.startswith("Sample gate: ") for note in pair.evidence_blockers)
         assert analyze_transactions(ctx).best_transaction is None
+
+
+# --- 2026-11-24 audit: short-horizon permanent drops (model waiver-permanent-drop-phase9) -------------------------------
+# Read-only audit (qa-work/2026-11-24-permanent-drop-audit): the Rest of Week and Next 7 Days best moves dropped the
+# roster's 7th-best producer (30.0 FP/G, 5.9 above the best available player) for +5.8 and +14.0 window Yahoo FP while
+# drops at or below replacement level supported the same adds; over his ~60 remaining games that gives up ~356 Yahoo FP.
+# A schedule-led ADD + DROP in a weekly horizon is supported only when its window gain covers the drop's production
+# above the best available player over his remaining scheduled games. Synthetic, name-neutral fixtures.
+
+def permanence_player(pid, position, *, ppg, games, pct, schedule_pct, remaining=None, rostered=False):
+    row = integrity_player(pid, position, ppg=ppg, games=games, pct=pct, schedule_pct=schedule_pct, rostered=rostered)
+    if remaining is not None:
+        row.schedule = row.schedule.model_copy(update={"rest_of_season_games": remaining})
+    return row
+
+
+def stream_add(pid=11, ppg=20.0, games=4):
+    """A center with more games and lower production: its positive net leans on the schedule."""
+    return permanence_player(pid, "C", ppg=ppg, games=games, pct=70, schedule_pct=90)
+
+
+def cheap_center(pid=3, ppg=19.0):
+    """A bench center below replacement level whose swap is production-led for `stream_add`."""
+    return permanence_player(pid, "C", ppg=ppg, games=3, pct=60, schedule_pct=70, remaining=60, rostered=True)
+
+
+def permanence_ctx(add, *, drop_ppg=30.0, remaining=60, mode="next_7_days", cheap=None, open_spot=False,
+        replacement_ppg=22.0):
+    """Roster: a center (`drop_ppg`, 2 games in the window, `remaining` games left) and a guard, plus an optional cheaper
+    bench center. The pool holds `add` and the best available player (a 22.0 FP/G center with no positive swap)."""
+    premium = permanence_player(1, "C", ppg=drop_ppg, games=2, pct=90, schedule_pct=5, remaining=remaining, rostered=True)
+    guard = permanence_player(2, "PG", ppg=20, games=3, pct=50, schedule_pct=50, remaining=remaining, rostered=True)
+    roster = [premium, guard, *([cheap] if cheap is not None else [])]
+    pool = [add]
+    if replacement_ppg is not None:
+        pool.append(permanence_player(21, "C", ppg=replacement_ppg, games=1, pct=60, schedule_pct=1))
+    bench = (1 if cheap is not None else 0) + (1 if open_spot else 0)
+    assignments = {1: "C", 2: "PG", **({cheap.player_id: "BN"} if cheap is not None else {})}
+    ctx = roster_ctx(roster, pool, slots_of(PG=1, C=1, **({"BN": bench} if bench else {})), assignments, mode=mode)
+    assert ctx.roster_capacity.transaction_shape == ("ADD_ONLY" if open_spot else "ADD_DROP")
+    return ctx, premium
+
+
+@pytest.mark.parametrize("ppg, gain, level, cost", [
+    (16.0, 4.0, (21, "C 21", 22.0), 464.0),
+    # A better add is itself the best available player: replacement level is never below the add.
+    (23.0, 32.0, (11, "C 11", 23.0), 406.0),
+])
+def test_a_tiny_window_gain_never_supports_a_large_permanent_drop_cost(ppg, gain, level, cost):
+    add = stream_add(ppg=ppg)
+    ctx, drop = permanence_ctx(add)
+    pair = enrich(ctx, add, drop.player_id)
+    explanation = pair.comparison.explanation
+    # The Phase-7 window check still holds (and is unchanged); the move fails only on its permanent cost.
+    assert pair.comparison.net_improvement > 0 and explanation.consistent and explanation.blocker is None
+    assert [check.key for check in explanation.checks] == ["ARITHMETIC", "CLAIMS_MEASURED", "COMPENSATION", "NEAR_TIE"]
+    assert explanation.window_points_gap == gain
+    check = explanation.permanent_drop
+    excess = 30.0 - level[2]
+    assert (check.window_gain, check.drop_value, check.replacement_player_id, check.replacement_name,
+        check.replacement_value) == (gain, 30.0, *level)
+    assert (check.drop_excess, check.drop_rest_of_season_games, check.drop_games_after_window) == (excess, 60, 58)
+    assert check.permanent_cost == cost and not check.supported and check.lower_cost_drop is None
+    assert pair.recommended_action == "PASS" and pair.recommended_action_type == "HOLD" and pair.verdict == "DO_NOT_ADD"
+    assert pair.verdict_text == (f"DO NOT ADD — ADD C 11 / DROP C 1: {gain:+.1f} Yahoo fantasy points in Next 7 Days, but "
+        f"dropping C 1 permanently gives up {cost:.1f} ({excess:.1f} FP/G above the best available player, {level[1]}, over "
+        "his 58 games after this window). Keep C 1. No lower-cost drop has a positive measured comparison for this add.")
+    assert pair.action_label == (f"HOLD: Keep C 1. A {gain:+.1f} Yahoo FP edge in Next 7 Days does not cover the {cost:.1f} "
+        "Yahoo FP permanent drop cost.")
+    note = (f"Permanent-drop gate: C 1 is {excess:.1f} Yahoo FP/G above the best available player ({level[1]}, 30.0 vs "
+        f"{level[2]:.1f}); over his 58 remaining scheduled games after this window that is {cost:.1f} Yahoo fantasy points "
+        f"given up permanently, more than the {gain:+.1f} window gain.")
+    assert pair.evidence_blockers == [note]
+    assert explanation.primary_tradeoff.startswith("Dropping is permanent: C 1 has 30.0 current-season Yahoo FP/G vs ")
+    assert explanation.primary_tradeoff.endswith(note.removeprefix("Permanent-drop gate: "))
+    analysis = analyze_transactions(ctx)
+    assert analysis.best_transaction is None and analysis.decision == "HOLD" and analysis.supported_move_count == 0
+    assert any(reason.startswith("Permanent-drop gate:") for reason in analysis.excluded_pair_reasons)
+    assert all((swap.add_player.player_id, swap.drop_player.player_id) != (11, 1)
+        for swap in [*analysis.top_supported_transactions, *analysis.watch_transactions])
+    # An unverified Yahoo status keeps the move unsupported; the measured verdict is still DO NOT ADD.
+    unknown_status(add)
+    unverified = enrich(ctx, add, drop.player_id)
+    assert unverified.recommended_action == "INSUFFICIENT EVIDENCE" and unverified.verdict == "DO_NOT_ADD"
+    assert unverified.evidence_blockers[0] == note and unverified.evidence_blockers[1].startswith("Yahoo status gate: ")
+
+
+def test_near_equal_stream_stays_supported_and_the_boundary_is_break_even_in_yahoo_points():
+    add = stream_add(ppg=20.0)
+    ctx, drop = permanence_ctx(add, drop_ppg=21.0)
+    pair = enrich(ctx, add, drop.player_id)
+    check = pair.comparison.explanation.permanent_drop
+    assert pair.recommended_action == "STREAM" and pair.verdict == "SUPPORTED_ADD"
+    assert (check.window_gain, check.drop_excess, check.permanent_cost, check.supported) == (38.0, -1.0, 0.0, True)
+    assert check.detail == ("C 1 (21.0 Yahoo FP/G) is not above the best available player (C 21, 22.0), so dropping C 1 "
+        "gives up no production the waiver pool cannot replace.")
+    assert any(item.startswith("Dropping is permanent: ") and item.endswith(check.detail)
+        for item in pair.comparison.explanation.tradeoffs), "the supported stream still discloses the permanent drop"
+    best = analyze_transactions(ctx).best_transaction
+    assert (best.add_player.player_id, best.drop_player.player_id) == (11, 1)
+    # 0.5 FP/G above replacement: 35.0 window points (4 x 20 - 2 x 22.5) cover exactly 0.5 x 70 games; one more game
+    # after the window does not. More remaining games can only block, never support.
+    ctx, drop = permanence_ctx(add, drop_ppg=22.5, remaining=72)
+    covered = enrich(ctx, add, drop.player_id)
+    check = covered.comparison.explanation.permanent_drop
+    assert (check.window_gain, check.permanent_cost, check.supported) == (35.0, 35.0, True)
+    assert covered.verdict == "SUPPORTED_ADD" and check.detail.endswith("covered by the +35.0 window gain.")
+    ctx, drop = permanence_ctx(add, drop_ppg=22.5, remaining=74)
+    held = enrich(ctx, add, drop.player_id)
+    assert held.comparison.explanation.permanent_drop.permanent_cost == 36.0 and held.verdict == "DO_NOT_ADD"
+
+
+def test_the_optimizer_uses_a_lower_cost_drop_when_one_supports_the_same_add():
+    add = stream_add(ppg=20.0)
+    ctx, premium = permanence_ctx(add, cheap=cheap_center())
+    nets = {pid: compare(ctx, add, pid).net_improvement for pid in (1, 3)}
+    assert nets[1] > nets[3] > 0, "the index alone prefers dropping the premium center"
+    blocked = compare(ctx, add, 1).explanation.permanent_drop
+    assert (blocked.window_gain, blocked.permanent_cost, blocked.supported) == (20.0, 464.0, False)
+    assert (blocked.lower_cost_drop.player_id, blocked.lower_cost_drop.window_points_gap) == (3, 23.0)
+    assert blocked.lower_cost_drop.permanent_cost == 0.0 and blocked.lower_cost_drop.net == nets[3]
+    decision = enrich(ctx, add)
+    assert decision.comparison.player_id == 3 and decision.verdict == "SUPPORTED_ADD"
+    skipped = next(row for row in decision.drop_alternatives if row.player_id == 1)
+    assert skipped.margin < 0 and skipped.note == "permanent drop cost 464.0 Yahoo FP exceeds the +20.0 window gain"
+    assert "Higher-index drops were not used: C 1 " in decision.drop_choice and skipped.note in decision.drop_choice
+    best = analyze_transactions(ctx).best_transaction
+    assert (best.add_player.player_id, best.drop_player.player_id) == (11, 3)
+    premium_pair = enrich(ctx, add, premium.player_id)
+    assert premium_pair.verdict == "DO_NOT_ADD" and premium_pair.verdict_text.endswith(
+        f"Lower-cost drop with a positive measured comparison: C 3 (net {nets[3]:+.2f}, window +23.0 Yahoo FP).")
+
+
+def test_without_a_lower_cost_drop_the_premium_drop_follows_the_same_break_even_rule():
+    from app.features.waivers.service import build_board
+    add = stream_add(ppg=20.0)
+    ctx, premium = permanence_ctx(add)
+    decision = enrich(ctx, add)
+    assert decision.comparison.player_id == 1, "the add's best measured answer is still shown"
+    assert decision.recommended_action_type == "HOLD" and decision.verdict == "DO_NOT_ADD"
+    assert decision.verdict_text.endswith("No lower-cost drop has a positive measured comparison for this add.")
+    assert analyze_transactions(ctx).best_transaction is None
+    board_view = build_board(ctx, "fixture", "t1", ctx.mode, None)
+    assert board_view.best_add_for_team_id is None
+    assert next(row for row in board_view.roster if row.player_id == 1).roster_decision == "keep_on_measured_model"
+    # Late in the season the same drop costs 8.0 x 2 = 16.0 Yahoo FP, which the +20.0 window gain covers.
+    ctx, premium = permanence_ctx(add, remaining=4)
+    late = enrich(ctx, add)
+    check = late.comparison.explanation.permanent_drop
+    assert (check.drop_games_after_window, check.permanent_cost, check.supported) == (2, 16.0, True)
+    assert late.verdict == "SUPPORTED_ADD" and late.comparison.player_id == 1
+    best = analyze_transactions(ctx).best_transaction
+    assert (best.add_player.player_id, best.drop_player.player_id) == (11, 1)
+
+
+def test_rest_of_season_outlook_never_runs_the_permanent_drop_check(monkeypatch):
+    from app.features.waivers import service
+    from app.features.waivers.service import build_board
+
+    def forbidden(ctx):
+        raise AssertionError("Rest of Season Outlook must not read replacement level")
+    monkeypatch.setattr(service, "replacement_level", forbidden)
+    add = stream_add(ppg=16.0)
+    ctx, premium = permanence_ctx(add, mode="ros", cheap=cheap_center())
+    pairs = [compare(ctx, row, pid) for row in (add, ctx.players[21]) for pid in (1, 2, 3)]
+    assert all(option.explanation is None or option.explanation.permanent_drop is None for option in pairs)
+    analysis = analyze_transactions(ctx)
+    board_view = build_board(ctx, "fixture", "t1", ctx.mode, premium.player_id)
+    for row in [*board_view.candidates, enrich(ctx, add), enrich(ctx, add, premium.player_id)]:
+        assert not any(note.startswith("Permanent-drop gate") for note in row.evidence_blockers)
+    assert not any(reason.startswith("Permanent-drop gate") for reason in analysis.excluded_pair_reasons)
+
+
+def test_explicit_drop_shows_the_blocked_pair_honestly_on_every_surface(monkeypatch):
+    from app.features.waivers.service import get_impact, get_waivers
+    add = stream_add(ppg=20.0)
+    ctx, premium = permanence_ctx(add, cheap=cheap_center())
+    monkeypatch.setattr("app.features.waivers.service.load_context", AsyncMock(return_value=ctx))
+    board_view = asyncio.run(get_waivers(None, "fixture", "t1", ctx.mode, premium.player_id))
+    card = next(row for row in board_view.candidates if row.player_id == 11)
+    check = card.comparison.explanation.permanent_drop
+    assert card.net_improvement > 0 and card.comparison.explanation.window_points_gap == 20.0
+    assert card.verdict == "DO_NOT_ADD" and card.recommended_action_type == "HOLD"
+    assert (check.permanent_cost, check.supported, check.lower_cost_drop.player_id) == (464.0, False, 3)
+    assert board_view.selected_player_result == "HOLD C 1" and board_view.best_add_for_team_id is None
+    summary = drop_summary_of(board_view, premium)
+    assert summary.decision == "keep_on_measured_model"
+    assert summary.headline == ("No supported or WATCH replacement exists for DROP C 1; 1 positive raw model comparison "
+        "did not pass the decision gates (1 DO NOT ADD; 1 by the permanent-drop gate). Keep C 1 under this model.")
+    raw = summary.highest_raw_comparison
+    assert (raw.candidate_id, raw.verdict, raw.raw_net) == (11, "DO_NOT_ADD", card.net_improvement)
+    assert raw.reason.startswith("Permanent-drop gate: C 1 is 8.0 Yahoo FP/G above the best available player")
+    impact = asyncio.run(get_impact(None, "fixture", "t1", 11, premium.player_id, ctx.mode))
+    assert impact.comparison == card.comparison and (impact.candidate.verdict, impact.candidate.verdict_text) == (
+        card.verdict, card.verdict_text)
+    # The lower-cost drop answers its own explicit drop as the supported move.
+    cheap_view = asyncio.run(get_waivers(None, "fixture", "t1", ctx.mode, 3))
+    assert drop_summary_of(cheap_view, ctx.players[3]).decision == "review_replacement"
+    assert cheap_view.best_add_for_team_id == 11
+
+
+def test_no_drop_additions_and_il_moves_never_run_the_permanent_drop_check():
+    add = stream_add(ppg=16.0)
+    ctx, premium = permanence_ctx(add, open_spot=True)
+    detail = enrich(ctx, add)
+    assert detail.recommended_action_type == "ADD_ONLY" and detail.comparison.comparison_type == "ADD_ONLY"
+    assert detail.comparison.explanation is None or detail.comparison.explanation.permanent_drop is None
+    assert not any(note.startswith("Permanent-drop gate") for note in detail.evidence_blockers)
+    assert analyze_transactions(ctx).add_only_recommendations[0].add_player.player_id == 11
+    roster = [evidence_player(1, "PG", 70, rostered=True), evidence_player(2, "C", 85, status="O", rostered=True),
+        evidence_player(3, "SF", 50, rostered=True)]
+    roster[1].components.player_value = None
+    for row in roster:
+        row.schedule = row.schedule.model_copy(update={"rest_of_season_games": 60})
+    ctx = roster_ctx(roster, [evidence_player(11, "C", 75), evidence_player(12, "PG", 80)],
+        slots_of(PG=1, C=1, BN=1, IL=1), {1: "PG", 2: "C", 3: "BN"}, eligible={2: ["C", "UTIL", "IL"]})
+    move = enrich(ctx, ctx.players[11])
+    assert move.recommended_action_type == "MOVE_TO_IL_THEN_ADD"
+    assert move.comparison.explanation is None or move.comparison.explanation.permanent_drop is None
+
+
+def test_a_pair_the_explanation_gate_rejects_stays_do_not_add_without_a_permanence_check():
+    add = stream_add(ppg=14.0)
+    ctx, premium = permanence_ctx(add)
+    pair = enrich(ctx, add, premium.player_id)
+    explanation = pair.comparison.explanation
+    assert explanation.refuted.keys() == {"schedule"} and not explanation.consistent
+    assert explanation.permanent_drop is None
+    assert pair.verdict == "DO_NOT_ADD" and pair.recommended_action == "INSUFFICIENT EVIDENCE"
+    assert pair.evidence_blockers[0].startswith("Explanation-consistency gate: ")
+    assert not any(note.startswith("Permanent-drop gate") for note in pair.evidence_blockers)
+
+
+def test_watch_is_never_promoted_and_a_premium_drop_is_not_kept_as_watch():
+    from app.features.waivers.service import build_board
+    add = stream_add(ppg=20.0)
+    add.current_season_games = add.recent.games = 3
+    ctx, drop = permanence_ctx(add, drop_ppg=21.0)
+    pair = enrich(ctx, add, drop.player_id)
+    assert pair.comparison.explanation.permanent_drop.supported, "no permanent cost: still only WATCH, never promoted"
+    assert pair.verdict == "WATCH_ONLY" and pair.recommended_action_type == "WATCH"
+    # A small sample is not the only obstacle when the drop costs more than the window gains: a larger sample could
+    # never make the move supported, so it is DO NOT ADD (HOLD), not WATCH.
+    ctx, premium = permanence_ctx(add)
+    held = enrich(ctx, add, premium.player_id)
+    assert held.comparison.explanation.permanent_drop.permanent_cost == 464.0
+    assert held.recommended_action_type == "HOLD" and held.verdict == "DO_NOT_ADD"
+    assert not any(note.startswith("Sample gate: ") for note in held.evidence_blockers)
+    assert analyze_transactions(ctx).watch_transactions == []
+    labels = {row.player_id: row.roster_decision for row in build_board(ctx, "fixture", "t1", ctx.mode, None).roster}
+    assert labels[premium.player_id] == "keep_on_measured_model"

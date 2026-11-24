@@ -1,18 +1,79 @@
-# CURRENT STATE — Phase 8 Weekly Production Season Blend — Deployed and Verified — 2026-11-24
+# CURRENT STATE — Phase 9 Permanent-Drop Policy Ready to Deploy; Phase 8 Last Verified Deployment — 2026-11-24
 
-**STATUS: PHASE 8 DEPLOYED AND VERIFIED (2026-11-24 10:32 UTC; 02:32
-PST).** Model `waiver-season-blend-phase8` is in production. It was deployed
-from commit `d16607f` ("fix: use current-season evidence in waiver
-production blend"), which is pushed to `origin/main` together with this
-record.
+**STATUS: PHASE 9 IMPLEMENTED AND VALIDATED LOCALLY / READY TO DEPLOY**
+(model `waiver-permanent-drop-phase9`, 2026-11-24). The deployment closeout
+was requested at 21:35 UTC. Phase 9 is not deployed until production
+acceptance passes. See "Phase 9 (ready to deploy)" below.
+
+**Production is serving a Phase 9 build that has not been accepted.**
+
+- At 21:20–21:24 UTC an out-of-procedure `docker compose` build of the
+  then-uncommitted working tree replaced `api` and `frontend`. Its origin is
+  unknown.
+- Production has served `waiver-permanent-drop-phase9` since 21:24 UTC. The
+  running API's files equal the validated working tree.
+- The Phase 8 images are no longer present (pruned; cause unknown).
+- A REFRESH WAIVER DATA from an open `/waivers` page followed at 21:24:35 UTC
+  (job `f56f60744a47`, SUCCEEDED). It was not this work.
+- The closeout first rebuilds Phase 8 from `2e6f379` as the rollback. It
+  keeps Phase 9 only if acceptance passes.
+
+**LAST VERIFIED DEPLOYMENT: PHASE 8 (2026-11-24 10:32 UTC; 02:32 PST).**
+Model `waiver-season-blend-phase8` was deployed from commit `d16607f` ("fix:
+use current-season evidence in waiver production blend"), which is pushed to
+`origin/main` together with its record.
 
 - Only `api` and `frontend` were recreated.
 - No migration, refresh, provider call, OAuth, Yahoo transaction or data
-  change came from this work. There is no permanent-drop policy, no schedule
-  change and no player-specific rule.
+  change came from that work. Phase 8 has no permanent-drop policy (Phase 9
+  below adds one), no schedule change and no player-specific rule.
 - Details: `docs/sessions/2026-11-24.md`. Evidence (local, untracked):
   `qa-work/2026-11-24-weekly-blend-audit/weekly-blend-report.md` (audit) and
   `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md` (deployment).
+
+### Phase 9 (ready to deploy): short-horizon permanent-drop policy
+
+- **Rule (E2, replacement break-even).** In Rest of Week, Next 7 Days and Next
+  14 Days, an ADD + DROP whose consistent positive net leans on a schedule
+  edge is supported only if its window gain (the Phase-7 window Yahoo FP)
+  covers `max(0, drop FP/G − replacement FP/G) × the drop's games after the
+  window`. Replacement level is the best available player: off the roster,
+  confirmed available, fresh, status-verified and sample-supported, and never
+  below the add. Break-even in Yahoo FP; no fitted threshold; no player names.
+- **Where.** It runs after the Phase-7 gate and before the sample, status and
+  STREAM role gates. A blocked pair is HOLD / DO NOT ADD, never WATCH, and the
+  optimizer moves to the add's next supported drop. Rest of Season Outlook,
+  ADD ONLY, MOVE TO IL THEN ADD and production- or fit-led pairs are never
+  checked. The four Phase-7 consistency checks are unchanged.
+- **Why.** On the persisted snapshots the best weekly moves dropped Jarrett
+  Allen (30.0 FP/G, 5.9 above the best available player) for +5.8 / +14.0
+  (Nov 24) and +28.5 / +3.9 (Nov 21) window FP. That gives up about 356–403
+  Yahoo FP over his remaining games, while drops at or below replacement level
+  supported the same adds.
+- **Effect (read-only shadows).**
+
+  | Snapshot / horizon | Phase 8 best move | Phase 9 best move |
+  |---|---|---|
+  | Nov 24 Rest of Week | Jones Jr. / Allen (+5.8 FP) | Jones Jr. / Huerter (+2.4 FP) |
+  | Nov 24 Next 7 Days | DeRozan / Allen (+14.0 FP) | DeRozan / Dunn (+4.9 FP) |
+  | Nov 24 Next 14 Days | Jones Jr. / Huerter | unchanged |
+  | Nov 21 Next 7 Days | Jones Jr. / Allen (+28.5 FP) | Jones Jr. / Huerter (+23.7 FP) |
+  | Nov 21 Next 14 Days | Jones Jr. / Allen (+3.9 FP) | Jones Jr. / Huerter (+24.9 FP) |
+
+  Rest of Season Outlook payloads are identical apart from the model stamp.
+- **Display.** Every checked weekly pair shows only backend facts:
+  - the short-term gain (`+X.X Yahoo FP during` the horizon);
+  - the permanent drop cost, `(drop FP/G − replacement FP/G) × games after
+    the window = X.X Yahoo FP`, from 2-dp values that reproduce the cost;
+  - the drop against the best available player, and the remaining games;
+  - PASS / FAIL, current-season values and any lower-cost drop.
+
+  The browser computes none of it.
+- **Validation and acceptance:** see `docs/sessions/2026-11-24.md`. The
+  deployment closeout was authorized on 2026-11-24 at 21:35 UTC. `api` and
+  `frontend` ship together because the bundle expects the new model version.
+  No migration. The rollback target is Phase 8, rebuilt from `2e6f379` and
+  tagged `pre-phase9` during the closeout. `pre-phase8` holds Phase 7.1.
 
 ### Method (weekly horizons only)
 

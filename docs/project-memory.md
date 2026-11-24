@@ -147,6 +147,39 @@
 
 ## Waiver Center Invariants
 
+- **Phase 9: short-horizon permanent-drop policy** (model
+  `waiver-permanent-drop-phase9`, 2026-11-24; implemented and validated
+  locally / ready to deploy). See `docs/sessions/2026-11-24.md`.
+  - **Rule:** in Rest of Week, Next 7 Days and Next 14 Days, an ADD + DROP
+    whose consistent positive net leans on a schedule edge is supported only
+    when `window gain >= max(0, drop FP/G − replacement FP/G) × drop games
+    after the window`. All values are in Yahoo FP. It is break-even, with no
+    fitted threshold and no player names.
+  - **Replacement level:** the best Phase-8 production value off the manager
+    roster among players that are confirmed available, identity-resolved,
+    fresh, status-verified and sample-supported in the horizon. It is never
+    below the add, is memoized per request and is never read in Rest of
+    Season Outlook.
+  - **Separate from the Phase-7 checks** (`PairExplanation.permanent_drop`,
+    not a fifth consistency check). The gate sits after the explanation gate
+    and before the sample, status and STREAM role gates.
+    - A blocked pair is HOLD / DO NOT ADD, or INSUFFICIENT EVIDENCE / DO NOT
+      ADD while its status is unverified. It is never WATCH.
+    - The optimizer excludes it, and the add falls to its next supported
+      drop.
+    - `lower_cost_drop` looks only at strictly lower-value drops, so it never
+      recurses.
+  - **Never checked:** Rest of Season Outlook, ADD ONLY, MOVE TO IL THEN
+    ADD, production-led pairs (the add produces at least as much) and fit-led
+    pairs.
+  - **Display:** the page renders only `PermanentDropCheck` facts and
+    computes nothing:
+    - the short-term gain;
+    - `(drop FP/G − replacement FP/G) × games after the window = permanent
+      cost`. Both values are 2-dp backend roundings whose difference is
+      `drop_excess`, so the shown arithmetic reproduces the cost;
+    - remaining games, PASS / FAIL and the lower-cost drop.
+
 - **Phase 8: weekly production season blend** (model
   `waiver-season-blend-phase8`; **deployed** 2026-11-24 10:32 UTC from
   commit `d16607f`, `api` and `frontend` only, no migration; rollback images

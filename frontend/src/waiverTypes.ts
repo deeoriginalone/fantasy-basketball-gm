@@ -186,6 +186,38 @@ export interface PairExplanation {
   tradeoffs: string[];
   primary_tradeoff: string | null;
   blocker: string | null;
+  /** Weekly schedule-led drops only: window gain vs the permanent drop cost (separate from the consistency checks). */
+  permanent_drop?: PermanentDropCheck | null;
+}
+
+/** The best measured lower-value drop for the same add (positive, consistent, no unsupported permanent cost). */
+export interface LowerCostDrop {
+  player_id: number;
+  player_name: string;
+  net: number;
+  window_points_gap: number | null;
+  permanent_cost: number;
+}
+
+/** Backend permanent-drop check: permanent_cost = max(0, drop_value - replacement_value) x drop_games_after_window. */
+export interface PermanentDropCheck {
+  horizon: string;
+  window_gain: number;
+  add_value: number;
+  drop_value: number;
+  add_current_season_value: number | null;
+  drop_current_season_value: number | null;
+  replacement_player_id: number | null;
+  replacement_name: string | null;
+  replacement_value: number;
+  drop_excess: number;
+  drop_rest_of_season_games: number;
+  drop_window_games: number;
+  drop_games_after_window: number;
+  permanent_cost: number;
+  supported: boolean;
+  lower_cost_drop: LowerCostDrop | null;
+  detail: string;
 }
 
 export interface DropAlternative {
@@ -230,6 +262,7 @@ export interface OptionPair {
   near_tie: boolean;
   alternatives: DropAlternative[];
   drop_choice: string;
+  permanent_drop?: PermanentDropCheck | null;
 }
 export type WaiverSampleLabel = "EXCELLENT" | "GOOD" | "LIMITED" | "VERY LIMITED" | "INSUFFICIENT FOR STRONG RECOMMENDATION" | "NO CURRENT-SEASON EVIDENCE";
 export type WaiverActionType = "ADD_ONLY" | "MOVE_TO_IL_THEN_ADD" | "ADD_DROP" | "WATCH" | "HOLD" | "INSUFFICIENT_EVIDENCE";

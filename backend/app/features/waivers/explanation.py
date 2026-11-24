@@ -16,6 +16,13 @@ returned evidence. Rules (contract consistency, no player-specific or basketball
   missing component). If the re-measured net is not above the near-tie threshold, the positive net is unsupported.
 * NEAR_TIE: a net whose absolute value is below half of the displayed unit (two decimals) cannot show a preference.
   Calculation rounding (6-decimal before/after scores) is about 1e-6, far below that unit.
+
+PERMANENT DROP (model waiver-permanent-drop-phase9; separate from the consistency checks above): in Rest of Week, Next 7
+Days and Next 14 Days, an ADD + DROP whose consistent positive net leans on a schedule edge (the add produces less per
+game) is only a short-term gain, while the drop is permanent. The window gain (Yahoo fantasy points above) must cover
+the drop's production above replacement level - the best available player, never below the add - over the drop's
+scheduled games after the window: max(0, drop FP/G - replacement FP/G) x games after the window. Break-even arithmetic,
+no fitted threshold; Rest of Season Outlook, no-drop additions and production- or fit-led pairs are never checked.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from app.features.waivers.contracts import (
     ExplanationCheck,
     Mode,
     PairExplanation,
+    PermanentDropCheck,
     ProductionBasis,
 )
 from app.features.waivers.production import blend_label, blend_math
@@ -45,6 +53,8 @@ COMPONENT_NAMES = {"roster_fit": "roster fit", "player_value": "production", "op
     "schedule": "schedule", "acquisition_value": "acquisition value"}
 EXPLANATION_GATE = "Explanation-consistency gate"
 NEAR_TIE_GATE = "Near tie"
+PERMANENT_DROP_GATE = "Permanent-drop gate"
+Replacement = tuple[int, str, float]
 
 
 def signed(value: float | None, digits: int = NET_DISPLAY_DECIMALS) -> str:
@@ -151,8 +161,10 @@ def explain_comparison(
     window: tuple[date | None, date | None],
     omitted: dict[str, str],
     recompute: Callable[[list[str]], float | None],
+    replacement: Callable[[], Replacement | None] | None = None,
 ) -> PairExplanation:
-    """Explain `comparison` exactly as measured and run the consistency checks."""
+    """Explain `comparison` exactly as measured and run the consistency checks. `replacement` (weekly horizons only)
+    returns the best available player for the permanent-drop check; it is read only when the check applies."""
     horizon = HORIZON_LABELS[mode]
     net = comparison.net_improvement
     add_basis = production_basis(add, mode)
@@ -262,8 +274,81 @@ def explain_comparison(
         season_trails = (add_basis.current_season_value is not None and drop_basis.current_season_value is not None
             and add_basis.current_season_value < drop_basis.current_season_value)
         explanation.prior_season_driven = recent_trails and season_trails
+    explanation.permanent_drop = permanent_drop_check(explanation, drop, replacement)
     _write_text(explanation, by_key, horizon, add, drop)
     return explanation
+
+
+def permanent_drop_check(explanation: PairExplanation, drop: Candidate | None,
+        replacement: Callable[[], Replacement | None] | None) -> PermanentDropCheck | None:
+    """The permanent-drop check of a weekly ADD + DROP whose consistent positive net leans on a schedule edge. None when
+    it does not apply: Rest of Season Outlook, no drop, a nonpositive or unreconciled net, a production- or fit-led
+    pair, or window points or remaining scheduled games that are not measured."""
+    if (replacement is None or drop is None or explanation.horizon == HORIZON_LABELS["ros"] or explanation.net is None
+            or explanation.net <= 0 or not explanation.consistent or "schedule" not in explanation.compensating
+            or "schedule" in explanation.refuted):
+        return None
+    add_basis, drop_basis = explanation.add_production, explanation.drop_production
+    gain, rest, window_games = explanation.window_points_gap, drop.schedule.rest_of_season_games, explanation.drop_games
+    if (gain is None or rest is None or window_games is None or add_basis.value is None or drop_basis is None
+            or drop_basis.value is None):
+        return None
+    best = replacement()
+    if best is None or best[2] < add_basis.value:
+        # The add is itself an available refill for the spot, so replacement level is never below the add.
+        best = (explanation.add_player_id, explanation.add_name, add_basis.value)
+    player_id, name, level = best
+    excess = round(drop_basis.value - level, 2)
+    after = max(0, rest - window_games)
+    cost = round(max(0.0, excess) * after, 1)
+    supported = gain >= cost
+    drop_name = explanation.drop_name
+    if excess <= 0:
+        detail = (f"{drop_name} ({drop_basis.value:.1f} Yahoo FP/G) is not above the best available player ({name}, "
+            f"{level:.1f}), so dropping {drop_name} gives up no production the waiver pool cannot replace.")
+    elif after == 0:
+        detail = (f"{drop_name} has no scheduled games after this window, so dropping {drop_name} gives up no later "
+            "production.")
+    else:
+        detail = (f"{drop_name} is {excess:.1f} Yahoo FP/G above the best available player ({name}, "
+            f"{drop_basis.value:.1f} vs {level:.1f}); over his {after} remaining scheduled games after this window that "
+            f"is {cost:.1f} Yahoo fantasy points given up permanently, "
+            f"{'covered by' if supported else 'more than'} the {gain:+.1f} window gain.")
+    return PermanentDropCheck(horizon=explanation.horizon, window_gain=gain, add_value=add_basis.value,
+        drop_value=drop_basis.value, add_current_season_value=add_basis.current_season_value,
+        drop_current_season_value=drop_basis.current_season_value, replacement_player_id=player_id,
+        replacement_name=name, replacement_value=level, drop_excess=excess, drop_rest_of_season_games=rest,
+        drop_window_games=window_games, drop_games_after_window=after, permanent_cost=cost, supported=supported,
+        detail=detail)
+
+
+def permanent_drop_blocked(explanation: PairExplanation | None) -> PermanentDropCheck | None:
+    """The failed permanent-drop check of a positive pair, or None."""
+    check = explanation.permanent_drop if explanation is not None else None
+    return check if check is not None and not check.supported else None
+
+
+def permanent_drop_note(check: PermanentDropCheck) -> str:
+    return f"{PERMANENT_DROP_GATE}: {check.detail}"
+
+
+def permanent_drop_verdict(pair: str, explanation: PairExplanation, check: PermanentDropCheck) -> str:
+    drop = explanation.drop_name
+    alternative = check.lower_cost_drop
+    if alternative is not None:
+        window = ("unavailable" if alternative.window_points_gap is None else f"{alternative.window_points_gap:+.1f}")
+        lower = (f" Lower-cost drop with a positive measured comparison: {alternative.player_name} (net "
+            f"{signed(alternative.net)}, window {window} Yahoo FP).")
+    else:
+        lower = " No lower-cost drop has a positive measured comparison for this add."
+    return (f"DO NOT ADD — {pair}: {check.window_gain:+.1f} Yahoo fantasy points in {check.horizon}, but dropping {drop} "
+        f"permanently gives up {check.permanent_cost:.1f} ({check.drop_excess:.1f} FP/G above the best available player, "
+        f"{check.replacement_name}, over his {check.drop_games_after_window} games after this window). Keep {drop}.{lower}")
+
+
+def permanent_drop_label(explanation: PairExplanation, check: PermanentDropCheck) -> str:
+    return (f"HOLD: Keep {explanation.drop_name}. A {check.window_gain:+.1f} Yahoo FP edge in {check.horizon} does not "
+        f"cover the {check.permanent_cost:.1f} Yahoo FP permanent drop cost.")
 
 
 def _write_text(explanation: PairExplanation, by_key: dict[str, float], horizon: str, add: Candidate,
@@ -285,12 +370,21 @@ def _write_text(explanation: PairExplanation, by_key: dict[str, float], horizon:
             f"On current-season evidence {add.player_name} trails: last 14 days {add.recent.value:.1f} vs "
             f"{drop.recent.value:.1f}, this season {add_basis.current_season_value:.1f} vs "
             f"{drop_basis.current_season_value:.1f} Yahoo FP/G.")
+    permanent = None
     if (drop is not None and net > 0 and explanation.horizon != HORIZON_LABELS["ros"] and drop_basis is not None
             and add_basis.current_season_value is not None and drop_basis.current_season_value is not None
             and drop_basis.current_season_value > add_basis.current_season_value):
-        tradeoffs.append(
+        permanent = (
             f"Dropping is permanent: {drop.player_name} has {drop_basis.current_season_value:.1f} current-season "
             f"Yahoo FP/G vs {add_basis.current_season_value:.1f} for {add.player_name}; this comparison covers only {horizon}.")
+    check = explanation.permanent_drop
+    if check is not None:
+        permanent = f"{permanent} {check.detail}" if permanent else f"Dropping is permanent: {check.detail}"
+    if permanent and check is not None and not check.supported:
+        # A drop that costs more than the window gains is the pair's main tradeoff.
+        tradeoffs.insert(0, permanent)
+    elif permanent:
+        tradeoffs.append(permanent)
     if drop is not None and "player_value" in explanation.unfavorable:
         tradeoffs.append("Production cost: " + _component_reason("player_value", by_key["player_value"], explanation,
             horizon).removeprefix("Production: ") + ".")
@@ -359,9 +453,14 @@ def _prior_part(name: str, basis: ProductionBasis) -> str:
 
 
 def short_note(explanation: PairExplanation | None) -> str:
-    """A one-line reason an alternative drop's positive index is not usable (empty when the explanation holds)."""
-    if explanation is None or explanation.consistent:
+    """A one-line reason an alternative drop's positive index is not usable: a failed consistency check or a failed
+    permanent-drop check (empty when the pair is usable)."""
+    if explanation is None:
         return ""
+    if explanation.consistent:
+        check = permanent_drop_blocked(explanation)
+        return (f"permanent drop cost {check.permanent_cost:.1f} Yahoo FP exceeds the {check.window_gain:+.1f} window gain"
+            if check is not None else "")
     if explanation.refuted:
         names = ", ".join(COMPONENT_NAMES.get(key, key) for key in explanation.refuted)
         window = (f" ({explanation.add_window_points:.1f} vs {explanation.drop_window_points:.1f} window Yahoo fantasy points)"

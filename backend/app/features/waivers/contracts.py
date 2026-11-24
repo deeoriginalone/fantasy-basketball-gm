@@ -95,7 +95,7 @@ EvidenceDimensionKey = Literal["PRODUCTION_SAMPLE", "CURRENT_ROLE", "SCHEDULE", 
 RESOLVED_IDENTITY_STATES = frozenset({
     "EXACT_ID", "EXACT_NAME_TEAM", "NORMALIZED_NAME_TEAM", "KNOWN_ALIAS_TEAM", "TEAM_CHANGE_SUPPORTED",
 })
-MODEL_VERSION = "waiver-season-blend-phase8"
+MODEL_VERSION = "waiver-permanent-drop-phase9"
 
 
 class Evidence(BaseModel):
@@ -502,6 +502,42 @@ class ExplanationCheck(BaseModel):
     detail: str
 
 
+class LowerCostDrop(BaseModel):
+    """The best measured alternative drop for the same add: a lower production value, a positive explanation-consistent
+    net and no unsupported permanent drop cost. A measured comparison, not by itself a supported move."""
+    player_id: int
+    player_name: str
+    net: float
+    window_points_gap: float | None = None
+    permanent_cost: float = 0.0
+
+
+class PermanentDropCheck(BaseModel):
+    """Short-horizon permanent-drop check for a schedule-led ADD + DROP in Rest of Week, Next 7 Days or Next 14 Days.
+
+    The window gain (the Phase-7 window Yahoo fantasy points) must cover the dropped player's production above
+    replacement level (the best available player, never below the add) over his scheduled games after the window:
+    permanent_cost = max(0, drop_value - replacement_value) x drop_games_after_window. Break-even arithmetic in Yahoo
+    fantasy points, not a forecast or a probability."""
+    horizon: str
+    window_gain: float
+    add_value: float
+    drop_value: float
+    add_current_season_value: float | None = None
+    drop_current_season_value: float | None = None
+    replacement_player_id: int | None = None
+    replacement_name: str | None = None
+    replacement_value: float
+    drop_excess: float
+    drop_rest_of_season_games: int
+    drop_window_games: int
+    drop_games_after_window: int
+    permanent_cost: float
+    supported: bool
+    lower_cost_drop: LowerCostDrop | None = None
+    detail: str
+
+
 class PairExplanation(BaseModel):
     """Backend-owned explanation of one exact comparison and its consistency checks.
 
@@ -547,6 +583,8 @@ class PairExplanation(BaseModel):
     tradeoffs: list[str] = Field(default_factory=list)
     primary_tradeoff: str | None = None
     blocker: str | None = None
+    # Separate from the consistency checks: a consistent schedule-led weekly drop can still cost more than it gains.
+    permanent_drop: PermanentDropCheck | None = None
 
 
 class DropAlternative(BaseModel):
@@ -971,6 +1009,7 @@ class OptionPair(BaseModel):
     near_tie: bool = False
     alternatives: list[DropAlternative] = Field(default_factory=list)
     drop_choice: str = ""
+    permanent_drop: PermanentDropCheck | None = None
 
 
 class DecisionOption(BaseModel):

@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-const VERSION = "waiver-season-blend-phase8";
+const VERSION = "waiver-permanent-drop-phase9";
 type Scenario = "add_only" | "move" | "two" | "full" | "hold_watch" | "undetermined" | "stale" | "unavailable";
 
 const evidence = { state: "partial", source: "Persisted NBA", as_of: "2026-10-25T00:00:00Z", detail: "Partial schedule and coverage." };
@@ -1459,6 +1459,122 @@ test("the exact pair shows every production bucket once, the prior-season share 
   await expect(dialog.getByRole("button", { name: "Close transaction analysis" })).toBeFocused();
   await expect(dialog.getByRole("list", { name: "Production basis: each game counted once" })).toHaveCount(2);
   await expect(dialog).toContainText(psd);
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+});
+
+test("a weekly stream's permanent drop is quantified: the best move's drop cost, and an explicit premium drop held with a lower-cost drop", async ({ page }) => {
+  // 2026-11-24 permanent-drop policy (model waiver-permanent-drop-phase9). Synthetic fixture; the numbers mirror the
+  // read-only Next 7 Days trace (+14.0 window points against 356.4 Yahoo FP given up over 60 later games).
+  scenario = "full";
+  boardPair = [1, 2];
+  const detail = "Bench Forward is 5.9 Yahoo FP/G above the best available player (Waiver Wing, 30.0 vs 24.1); over his 60 "
+    + "remaining scheduled games after this window that is 356.4 Yahoo fantasy points given up permanently, more than the +14.0 window gain.";
+  const freeDetail = "Weak Guard (23.0 Yahoo FP/G) is not above the best available player (Waiver Wing, 24.1), so dropping Weak Guard "
+    + "gives up no production the waiver pool cannot replace.";
+  const check = (tweaks: Record<string, unknown> = {}) => ({ horizon: "Next 7 Days", window_gain: 14, add_value: 18.51, drop_value: 30,
+    add_current_season_value: 16.73, drop_current_season_value: 29.73, replacement_player_id: 9, replacement_name: "Waiver Wing",
+    replacement_value: 24.06, drop_excess: 5.94, drop_rest_of_season_games: 62, drop_window_games: 2, drop_games_after_window: 60,
+    permanent_cost: 356.4, supported: false,
+    lower_cost_drop: { player_id: 2, player_name: "Weak Guard", net: .230743, window_points_gap: 4.9, permanent_cost: 0 }, detail, ...tweaks });
+  const free = check({ supported: true, window_gain: 4.9, drop_value: 23.04, drop_current_season_value: 23.23, drop_excess: -1.02,
+    permanent_cost: 0, lower_cost_drop: null, detail: freeDetail });
+  const supported = drop(2, .230743);
+  const supportedComparison = { ...supported, explanation: { ...supported.explanation, permanent_drop: free,
+    tradeoffs: [`Dropping is permanent: ${freeDetail}`], primary_tradeoff: `Dropping is permanent: ${freeDetail}` } };
+  const base = swap();
+  await page.route("**/api/v1/waivers/transactions?**", (route) => route.fulfill({ json: {
+    ...transactions(), decision: "STREAM", recommended_action_type: "ADD_DROP",
+    action_label: "ADD Available Center + DROP Weak Guard: Your roster is full.",
+    best_transaction: { ...base, decision: "STREAM", drop_player: roster[0], comparison: supportedComparison,
+      add_player: { ...base.add_player, comparison: supportedComparison, verdict: "SUPPORTED_ADD", recommended_action: "STREAM",
+        recommended_action_type: "ADD_DROP", evidence_blockers: [] } },
+  } }));
+  const verdictText = "DO NOT ADD — ADD Available Center / DROP Bench Forward: +14.0 Yahoo fantasy points in Next 7 Days, but dropping "
+    + "Bench Forward permanently gives up 356.4 (5.9 FP/G above the best available player, Waiver Wing, over his 60 games after this "
+    + "window). Keep Bench Forward. Lower-cost drop with a positive measured comparison: Weak Guard (net +0.23, window +4.9 Yahoo FP).";
+  const blocked = () => {
+    const comparison = drop(4, .503714);
+    return player(1, "Available Center", { ...comparison, explanation: { ...comparison.explanation, permanent_drop: check(),
+      tradeoffs: [`Dropping is permanent: ${detail}`], primary_tradeoff: `Dropping is permanent: ${detail}` } }, {
+      recommended_action: "PASS", recommended_action_type: "HOLD", verdict: "DO_NOT_ADD", verdict_text: verdictText,
+      action_label: "HOLD: Keep Bench Forward. A +14.0 Yahoo FP edge in Next 7 Days does not cover the 356.4 Yahoo FP permanent drop cost.",
+      evidence_blockers: [`Permanent-drop gate: ${detail}`] });
+  };
+  await page.route("**/api/v1/waivers/replacements?**", async (route) => {
+    const url = new URL(route.request().url());
+    expect(route.request().method()).toBe("GET");
+    const dropId = Number(url.searchParams.get("drop_player_id"));
+    const mode = url.searchParams.get("mode") ?? "this_week";
+    if (dropId !== 4) {
+      await route.fulfill({ json: board(mode, dropId) });
+      return;
+    }
+    await route.fulfill({ json: { ...board(mode, 4), candidates: [blocked()], best_add_for_team_id: null, top_measured_candidate_id: 1,
+      selected_player_result: "HOLD Bench Forward",
+      drop_summary: { drop_player_id: 4, drop_player_name: "Bench Forward", decision: "keep_on_measured_model", result: "HOLD Bench Forward",
+        best_valid_replacement_id: null, watch_candidate_id: null,
+        headline: "No supported or WATCH replacement exists for DROP Bench Forward; 1 positive raw model comparison did not pass the "
+          + "decision gates (1 DO NOT ADD; 1 by the permanent-drop gate). Keep Bench Forward under this model.",
+        highest_raw_comparison: null } } });
+  });
+  await page.route("**/api/v1/waivers/*/impact?**", async (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("drop_player_id")).toBe("4");
+    const row = blocked();
+    await route.fulfill({ json: { league_key: "478.l.50505", team_key: "478.l.50505.t.9", mode: url.searchParams.get("mode"),
+      model_version: VERSION, candidate: row, comparison: row.comparison, limitations: [] } });
+  });
+  await page.goto("/waivers");
+  const best = section(page, "BEST MOVES RIGHT NOW");
+  await expect(best.getByRole("heading", { name: "ADD: Available Center", exact: true })).toBeVisible();
+  await expect(best).toContainText("DROP: Weak Guard");
+  await expect(best.locator(".waiver-verdict")).toHaveText("SUPPORTED ADD");
+  const disclosed = best.getByRole("group", { name: "Permanent drop check: Weak Guard" }).first();
+  await expect(disclosed).toContainText("NO PERMANENT DROP COST");
+  await expect(disclosed).toContainText("Short-term gain+4.9 Yahoo FP during Next 7 Days");
+  await expect(disclosed).toContainText("Permanent drop cost0.0 Yahoo FP: Weak Guard (23.04 FP/G) is not above Waiver Wing (24.06 FP/G)");
+  await expect(disclosed).toContainText("ResultPASS — no permanent drop cost");
+  await expect(disclosed).toContainText(freeDetail);
+  await expect(best.locator(".waiver-tradeoff").filter({ hasText: "Dropping is permanent" })).toContainText(freeDetail);
+  // The explicit-drop tool shows the blocked premium drop honestly: its measured gain, its permanent cost and the lower-cost drop.
+  const compare = section(page, "COMPARE A SPECIFIC DROP");
+  await openDropPicker(page);
+  await compare.getByRole("radio", { name: /Bench Forward/ }).check();
+  const answer = compare.locator(".waiver-drop-answer");
+  await expect(answer.locator(".waiver-outcome")).toHaveText("HOLD Bench Forward");
+  await expect(answer).toContainText("(1 DO NOT ADD; 1 by the permanent-drop gate)");
+  const card = compare.locator(".waiver-replacement-card").first();
+  await expect(card).toContainText("Selected dropBench Forward");
+  await expect(card.locator(".waiver-verdict").first()).toHaveText("DO NOT ADD");
+  await expect(card).toContainText(verdictText);
+  await expect(card.locator(".waiver-outcome")).toContainText(`Positive window gain, but the drop is permanent. ${detail}`);
+  await expect(card).not.toContainText("Positive measured roster-index change");
+  const facts = card.getByRole("group", { name: "Permanent drop check: Bench Forward" }).first();
+  await expect(facts.getByRole("heading", { name: "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN" })).toBeVisible();
+  await expect(facts).toContainText("Short-term gain+14.0 Yahoo FP during Next 7 Days");
+  await expect(facts).toContainText("Permanent drop cost(30.00 − 24.06 FP/G) × 60 games after this window = 356.4 Yahoo FP");
+  await expect(facts).toContainText("Drop vs best availableBench Forward 30.00 vs Waiver Wing 24.06 Yahoo FP/G (model production)");
+  await expect(facts).toContainText("Remaining games62 left this regular season: 2 in this window, 60 after it");
+  await expect(facts).toContainText("ResultFAIL — the permanent drop cost exceeds the window gain");
+  await expect(facts).toContainText("Current seasonBench Forward 29.7 vs add 16.7 Yahoo FP/G");
+  await expect(facts).toContainText("Lower-cost dropWeak Guard: net +0.23, window +4.9 Yahoo FP, no permanent drop cost");
+  await expect(compare).not.toContainText(/\b(risky|elite|premium|high-value)\b/i);
+  await expectNoBlockingOverflow(page);
+  await expectAccessible(page);
+  // Keyboard: Analyze opens exactly this pair; the dialog shows the same check; Escape returns focus to the opener.
+  const opener = card.getByRole("button", { name: "Analyze option: Available Center" });
+  await opener.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Player impact analysis" });
+  await expect(dialog.getByRole("button", { name: "Close analysis" })).toBeFocused();
+  await expect(dialog).toContainText("Add Available Center; drop Bench Forward.");
+  await expect(dialog.locator(".waiver-verdict").first()).toHaveText("DO NOT ADD");
+  await expect(dialog).toContainText(verdictText);
+  await expect(dialog.getByRole("group", { name: "Permanent drop check: Bench Forward" })).toContainText("356.4 Yahoo FP");
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   await expectAccessible(page);
   await page.keyboard.press("Escape");
