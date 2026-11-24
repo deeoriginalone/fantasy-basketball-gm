@@ -17,7 +17,7 @@ const apiOutput = ts.transpileModule(api, {
 const output = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const VERSION = "waiver-decision-integrity-phase7.1";
+const VERSION = "waiver-season-blend-phase8";
 const TWO_WEEK = "Two-week move. Main reason: Schedule: 7 games vs 5 games in Next 14 Days, +1.09 index points.";
 
 function load(states = []) {
@@ -68,11 +68,17 @@ const currentRole = {
   season_usage: .231, season_usage_quality: evidence,
   method: "Latest three vs preceding three games; not a projection.", limitations: ["Game-level usage is unavailable."],
 };
+const productionBuckets = (value) => [
+  { key: "RECENT", label: "Recent current season (last 14 days)", games: 2, weight_games: 2, value: value - 2, share: .1667, season: "2026-27", first_game: "2026-10-22", last_game: "2026-10-24" },
+  { key: "EARLIER", label: "Earlier current season", games: 8, weight_games: 8, value: value + .4, share: .6667, season: "2026-27", first_game: "2026-10-02", last_game: "2026-10-09" },
+  { key: "PRIOR", label: "Prior season", games: 60, weight_games: 2, value: value + .4, share: .1667, season: "2025-26", first_game: null, last_game: null },
+];
 const basis = (value, tweaks = {}) => ({
-  value, basis: "RECENT_BLENDED", label: "Last 14 days blended with 2025-26 (83% previous season): mostly previous-season evidence",
+  value, basis: "CURRENT_SEASON_BLENDED", label: "This season (10 games) blended with 2025-26 counted as 2 games (17% prior season)",
   percentile: 80, window_value: value - 2, window_games: 2, window_weight: .1667, prior_value: value + .4, prior_games: 60,
-  prior_season: "2025-26", prior_weight: .8333, current_season_value: value - 2, current_season_games: 2,
-  math: `0.167 (2/12) x ${(value - 2).toFixed(2)} last 14 days (2 games) + 0.833 (10/12) x ${(value + .4).toFixed(2)} 2025-26 (60 games) = ${value.toFixed(2)}`,
+  prior_season: "2025-26", prior_weight: .1667, current_season_value: value - .08, current_season_games: 10,
+  buckets: productionBuckets(value),
+  math: `(2 x ${(value - 2).toFixed(2)} last 14 days + 8 x ${(value + .4).toFixed(2)} earlier this season + 2 x ${(value + .4).toFixed(2)} 2025-26) / 12 = ${value.toFixed(2)}`,
   ...tweaks,
 });
 // The backend explanation for one exact comparison; its single contribution reproduces the fixture net.
@@ -117,7 +123,7 @@ const noDrop = (type = "ADD_ONLY", moved = null) => ({
   reasons: ["No-drop comparison over the same 13 non-injury roster spots: nobody is removed."],
   explanation: explanation(null, 12, { comparison_type: type, drop_player_id: null, drop_name: null, drop_production: null,
     drop_games: null, drop_window_points: null, window_points_gap: null,
-    statement: "Production: Available Center 32.0 Yahoo FP/G (last 14 days blended with the previous season), +12.00 index points. Net modeled change: +12.00." }),
+    statement: "Production: Available Center 32.0 Yahoo FP/G (this season's games blended with the previous season), +12.00 index points. Net modeled change: +12.00." }),
 });
 const candidateRow = (id, name, comparison = drop(2), tweaks = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, position: "C",
@@ -211,11 +217,19 @@ const HEADLINES = {
   UNDETERMINED: ["ROSTER CAPACITY NEEDS A YAHOO REFRESH", "Your saved roster is from 2026-10-25; Yahoo roster slots are not saved for 13 of 13 players."],
 };
 const BLANK = "Yahoo did not provide an explicit current status. Confirm the player in Yahoo before acting.";
+// Backend-shaped decision-support production: 3 earlier games beside the prior season counted as 2 games.
+const measuredBuckets = (value) => [
+  { key: "RECENT", label: "Recent current season (last 14 days)", games: 0, weight_games: 0, value: null, share: 0, season: "2026-27", first_game: null, last_game: null },
+  { key: "EARLIER", label: "Earlier current season", games: 3, weight_games: 3, value: value + 1, share: .6, season: "2026-27", first_game: "2026-10-21", last_game: "2026-10-24" },
+  { key: "PRIOR", label: "Prior season", games: 70, weight_games: 2, value: value - 1.5, share: .4, season: "2025-26", first_game: null, last_game: null },
+];
 const measured = (value, tweaks = {}) => ({
-  value, comparable: true, basis: "CURRENT_SEASON", current_value: value + 2, current_games: 3, current_season: "2026-27",
-  current_weight: 3 / 13, prior_value: value - 1, prior_games: 70, prior_season: "2025-26", state: "stale",
-  as_of: "2026-10-25T19:04:00Z", sample_label: "INSUFFICIENT FOR STRONG RECOMMENDATION",
-  detail: "Measured Yahoo fantasy PPG shrunk toward 2025-26. Imported 2026-10-25 (stale). Historical, not a projection.", ...tweaks,
+  value, comparable: true, basis: "CURRENT_SEASON", current_value: value + 1, current_games: 3, current_season: "2026-27",
+  current_weight: .6, prior_value: value - 1.5, prior_games: 70, prior_season: "2025-26", state: "stale",
+  as_of: "2026-10-25T19:04:00Z", sample_label: "INSUFFICIENT FOR STRONG RECOMMENDATION", buckets: measuredBuckets(value),
+  label: "This season (3 games) blended with 2025-26 counted as 2 games (40% prior season)",
+  math: `(3 x ${(value + 1).toFixed(2)} earlier this season + 2 x ${(value - 1.5).toFixed(2)} 2025-26) / 5 = ${value.toFixed(2)}`,
+  detail: `${value.toFixed(1)} Yahoo FP/G model production value: this season blended with 2025-26. Imported 2026-10-25 (stale). Historical, not a projection.`, ...tweaks,
 });
 const optionRow = (id, name, tweaks = {}) => ({
   player_id: id, yahoo_player_id: `y${id}`, player_name: name, positions: "PG,SG", nba_team: "BOS", decision_rank: id - 20, classification: "MEASURED",
@@ -224,8 +238,8 @@ const optionRow = (id, name, tweaks = {}) => ({
   yahoo_status: null, status_label: "UNKNOWN", status_detail: BLANK,
   measured: measured(50 - id), games_in_window: 4, games_in_window_state: "stale",
   fills: ["PG / SG"], fills_level: "HIGH", fills_slots: ["PG", "SG"], multi_position: true,
-  evidence_level: "INSUFFICIENT FOR STRONG RECOMMENDATION", reason: `Measured ${(50 - id).toFixed(1)} Yahoo fantasy PPG.`,
-  why: ["Fills the PG / SG need (high priority).", `${(50 - id).toFixed(1)} measured Yahoo fantasy PPG from 3 current-season games, blended with 2025-26.`],
+  evidence_level: "INSUFFICIENT FOR STRONG RECOMMENDATION", reason: `Model production value ${(50 - id).toFixed(1)} Yahoo FP/G.`,
+  why: ["Fills the PG / SG need (high priority).", `Model production value ${(50 - id).toFixed(1)} Yahoo FP/G: This season (3 games) blended with 2025-26 counted as 2 games (40% prior season).`],
   blockers: [
     "Roster capacity is undetermined: Your saved roster is from 2026-10-25; Yahoo roster slots are not saved for 13 of 13 players.",
     "Yahoo status is UNKNOWN (blank); blank is not treated as healthy.",
@@ -242,7 +256,7 @@ const option = (...args) => {
 const potential = (id, name, classification = "SOURCE_STALE", tweaks = {}) => option(id, name, {
   classification: "POTENTIAL_TARGET", availability: "unknown", availability_classification: classification,
   availability_confirmed: false, availability_label: LABELS[classification], availability_evidence: availabilityEvidence(classification),
-  reason: `Measured ${(50 - id).toFixed(1)} Yahoo fantasy PPG; ${LABELS[classification].toLowerCase()} — check in Yahoo before acting.`,
+  reason: `Model production value ${(50 - id).toFixed(1)} Yahoo FP/G; ${LABELS[classification].toLowerCase()} — check in Yahoo before acting.`,
   blockers: ["Yahoo availability is unverified: league rosters are from 2026-10-25 or incomplete, so this player may have been added since."],
   confirm: ["Yahoo availability (free agent or waivers)", "Current Yahoo status"], ...tweaks,
 });
@@ -263,7 +277,7 @@ const decisionSupport = (tweaks = {}) => ({
   watch_ids: [], potential_target_ids: [], potential_target_count: 0,
   options: [
     option(21, "Measured Guard", { classification: "BEST_MEASURED_OPTION" }),
-    option(22, "Group Wing", { classification: "WATCH", positions: "SF,PF", fills: [], fills_level: null, reason: "Highest measured wing / forward production: 28.0 Yahoo fantasy PPG. Would rank 12 of 14 on your roster." }),
+    option(22, "Group Wing", { classification: "WATCH", positions: "SF,PF", fills: [], fills_level: null, reason: "Highest wing / forward model production value: 28.0 Yahoo FP/G. Would rank 12 of 14 on your roster." }),
     option(23, "Watch Center", { classification: "WATCH", positions: "C", fills: [], fills_level: null }),
     option(24, "Watch Forward", { positions: "PF", fills: [], fills_level: null }),
     option(25, "Unmeasured Rookie", { classification: "UNAVAILABLE", fills: [], fills_level: null, why: [],
@@ -273,7 +287,7 @@ const decisionSupport = (tweaks = {}) => ({
   supported_count: 0, comparable_count: 4,
   not_comparable_reasons: { "On another team's saved roster (not a target)": 152, "Yahoo O/OFS/NA status": 270 },
   roster_floor_ppg: 27.2, roster_floor_player_id: 2,
-  method: "Measured production is Yahoo-rule fantasy points per game from persisted NBA games.",
+  method: "Model production value is Yahoo-rule fantasy points per game from persisted NBA games.",
   limitations: ["Decision support never upgrades a player to ADD, STREAM or MUST ADD; supported actions use the strict evidence gates."],
   ...tweaks,
 });
@@ -1384,7 +1398,7 @@ test("full-list exploratory sorts reorder by backend form numbers only and keep 
 // -----------------------------------------------------------------------------------------------------------------
 const optionPair = (tweaks = {}) => ({
   comparison_type: "ADD_DROP", drop_player_id: 4, drop_player_name: "Bench Forward", net: .412447,
-  add_ppg: 22.59, drop_ppg: 18.1, basis_label: "Last 14 days blended with 2025-26 (62% previous season)",
+  add_ppg: 22.59, drop_ppg: 18.1, basis_label: "This season (14 games) blended with 2025-26 counted as 2 games (12% prior season)",
   add_games: 3, drop_games: 2, window_points_gap: 31.57, starting_slots_before: 10, starting_slots_after: 10, starting_slots_required: 10,
   statement: "Production: 22.6 vs 18.1 Yahoo FP/G, +0.30 index points. Net modeled change: +0.41.",
   primary_reason: "Production: 22.6 vs 18.1 Yahoo FP/G, +0.30 index points", primary_tradeoff: "Opportunity: -0.05 index points",
@@ -1453,7 +1467,7 @@ test("full-roster OTHER GOOD OPTIONS name the exact drop on one basis, or say th
   const wing = between(html, "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
   assert.match(wing, /<dt>Best compatible drop \(comparison only\)<\/dt><dd>Bench Forward<\/dd>/, "a non-supported card never presents its drop as advice");
   assert.match(wing, /<dt>Net \(exact pair\)<\/dt><dd>\+0\.41 index points<\/dd>/);
-  assert.match(wing, /<dt>Yahoo FP\/G \(same basis\)<\/dt><dd>Add 22\.6 · drop 18\.1<small>Last 14 days blended with 2025-26 \(62% previous season\)<\/small>/);
+  assert.match(wing, /<dt>Yahoo FP\/G \(same basis\)<\/dt><dd>Add 22\.6 · drop 18\.1<small>This season \(14 games\) blended with 2025-26 counted as 2 games \(12% prior season\)<\/small>/);
   assert.match(wing, /<dt>Games in Rest of Week<\/dt><dd>3 vs 2 · window FP \+31\.6<\/dd>/);
   assert.match(wing, /<dt>Need \/ fit change<\/dt><dd>Starting slots 10 → 10 of 10 \(no fit change\)<\/dd>/);
   assert.match(wing, /<strong>Primary blocker:<\/strong> Sample gate: Group Wing 1 game in the last 14 days\./);
@@ -1527,8 +1541,8 @@ test("the exact calculation lists gains and costs that sum to the net, both prod
   assert.match(html, /<tr class="is-cost"><th scope="row">player value<\/th><td>61\.2000<\/td><td>60\.4000<\/td><td>-0\.8000<\/td><td>25\.00%<\/td><td>-0\.200000<\/td><\/tr>/);
   assert.match(html, /<tr class="is-gain"><th scope="row">schedule<\/th><td>50\.0000<\/td><td>53\.0000<\/td><td>\+3\.0000<\/td><td>15\.00%<\/td><td>\+0\.450000<\/td><\/tr>/);
   assert.match(html, /<th scope="row">Sum = net<\/th><td colSpan="4">Returned net \+0\.250000<\/td><td>\+0\.250000<\/td>/);
-  assert.match(html, /<strong>Available Center:<\/strong> 20\.00 Yahoo FP\/G · Last 14 days blended with 2025-26 \(83% previous season\): mostly previous-season evidence · 0\.167 \(2\/12\) x 18\.00 last 14 days \(2 games\) \+ 0\.833 \(10\/12\) x 20\.40 2025-26 \(60 games\) = 20\.00/);
-  assert.match(html, /<strong>Bench Forward:<\/strong> 24\.00 Yahoo FP\/G · Last 14 days blended/);
+  assert.match(html, /<strong>Available Center:<\/strong> 20\.00 Yahoo FP\/G · This season \(10 games\) blended with 2025-26 counted as 2 games \(17% prior season\) · \(2 x 18\.00 last 14 days \+ 8 x 20\.40 earlier this season \+ 2 x 20\.40 2025-26\) \/ 12 = 20\.00/);
+  assert.match(html, /<strong>Bench Forward:<\/strong> 24\.00 Yahoo FP\/G · This season \(10 games\) blended/);
   assert.match(html, /Window Yahoo fantasy points \(games × FP\/G, before daily lineup limits\): 80\.0 vs 72\.0 \(\+8\.0\)\./);
   assert.match(html, /Would it still win without…<\/strong> schedule: -0\.2353/);
   assert.match(html, /PASS · COMPENSATION:<\/strong> Every compensating claim holds in Yahoo fantasy points\./);
@@ -1677,4 +1691,35 @@ test("the best move lists every backend tradeoff, including a fragile window edg
   const html = moves(analysis, pairBoard(analysis));
   assert.ok(html.includes(`<div class="waiver-tradeoff"><strong>Tradeoffs:</strong><ul><li>${tradeoffs[0]}</li><li>${tradeoffs[1]}</li></ul></div>`),
     "both tradeoffs are on the card, not only the first");
+});
+
+// -----------------------------------------------------------------------------------------------------------------
+// 2026-11-24 weekly production blend: the model value counts every current-season game once (last 14 days and earlier
+// this season) beside the prior season counted as a fixed number of games. The page renders the backend buckets and
+// arithmetic verbatim; no weight is computed in the browser.
+// -----------------------------------------------------------------------------------------------------------------
+test("the exact calculation lists every production bucket once with its games and share, and no browser weight", () => {
+  const explained = explanation("Bench Forward", .25, { drop_player_id: 4, add_production: basis(20), drop_production: basis(24) });
+  const player = candidate(1, "Available Center", { ...drop(4, .25), explanation: explained }, { recommended_action: "ADD", recommended_action_type: "ADD_DROP", evidence_blockers: [] });
+  const html = render(load().ImpactContent, { impact: { model_version: VERSION, candidate: player, comparison: player.comparison, limitations: [] }, selectedDropId: null });
+  const add = between(html, "<strong>Available Center:</strong> 20.00", "<strong>Bench Forward:</strong>");
+  assert.match(add, /<ul class="waiver-buckets" aria-label="Production basis: each game counted once"><li>Recent current season \(last 14 days\): 2 games at 18\.0 FP\/G, 2026-10-22 to 2026-10-24 · 17%<\/li><li>Earlier current season: 8 games at 20\.4 FP\/G, 2026-10-02 to 2026-10-09 · 67%<\/li><li>Prior season 2025-26: 60 games at 20\.4 FP\/G, counted as 2 games · 17%<\/li><\/ul>/);
+  const dropped = between(html, "<strong>Bench Forward:</strong> 24.00", "<p><strong>Schedule in");
+  assert.match(dropped, /<li>Recent current season \(last 14 days\): 2 games at 22\.0 FP\/G, 2026-10-22 to 2026-10-24 · 17%<\/li>/);
+  assert.doesNotMatch(html, /weight \d+\/\d+|\(\d+\/\d+\) x|n\/\(n\+10\)/, "no hidden coefficient");
+});
+
+test("option cards and details show the MODEL PRODUCTION VALUE with the backend basis, and a missing prior is said", () => {
+  const result = fullRosterSupport((item) => item.player_id === 22 ? { ...item, pair: optionPair() } : null);
+  const html = otherOptions(result);
+  const wing = between(html, "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
+  assert.match(wing, /<dt>MODEL PRODUCTION VALUE<\/dt><dd>28\.0 Yahoo FP\/G · This season \(3 games\) blended with 2025-26 counted as 2 games \(40% prior season\)<small>Based on: \(3 x 29\.00 earlier this season \+ 2 x 26\.50 2025-26\) \/ 5 = 28\.00 Yahoo FP\/G\.<\/small>/);
+  assert.match(wing, /<li>Recent current season \(last 14 days\): no games<\/li><li>Earlier current season: 3 games at 29\.0 FP\/G, 2026-10-21 to 2026-10-24 · 60%<\/li><li>Prior season 2025-26: 70 games at 26\.5 FP\/G, counted as 2 games · 40%<\/li>/);
+  assert.doesNotMatch(html, /MEASURED FOR RANKING|weight \d+\/\d+|measured fantasy PPG|Yahoo fantasy PPG/);
+  const rookie = { ...measured(30), prior_value: null, prior_season: null, current_weight: 1, label: "This season only (3 games; no supported prior-season history)",
+    math: "(3 x 30.00 earlier this season) / 3 = 30.00", buckets: [...measuredBuckets(30).slice(0, 2).map((bucket) => bucket.key === "EARLIER"
+      ? { ...bucket, value: 30, share: 1 } : bucket), { key: "PRIOR", label: "Prior season", games: 0, weight_games: 0, value: null, share: 0, season: null, first_game: null, last_game: null }] };
+  const detail = render(load().ProductionBuckets, { buckets: rookie.buckets });
+  assert.equal(detail, '<ul class="waiver-buckets" aria-label="Production basis: each game counted once"><li>Recent current season (last 14 days): no games</li><li>Earlier current season: 3 games at 30.0 FP/G, 2026-10-21 to 2026-10-24 · 100%</li><li>Prior season: not used (no supported prior-season history)</li></ul>');
+  assert.equal(render(load().ProductionBuckets, { buckets: [] }), "");
 });

@@ -147,17 +147,61 @@
 
 ## Waiver Center Invariants
 
+- **Phase 8: weekly production season blend** (model
+  `waiver-season-blend-phase8`; validated and committed 2026-11-24;
+  deployment status is recorded in `docs/status/current-state.md`; no
+  migration). See `docs/sessions/2026-11-24.md`.
+  - **Every current-season game contributes.** Rest of Week, Next 7 Days and
+    Next 14 Days value a player at `(sum of current-season game Yahoo FP +
+    PRIOR_GAMES × prior-season FP/G) / (current-season games +
+    PRIOR_GAMES)`, with `PRIOR_GAMES = 2`. `production.py` is the canonical
+    production basis.
+  - **Non-overlapping buckets, no double counting:**
+    - RECENT: current-season regular-season games from Pacific today minus
+      14 days through today (the Last 14 Days evidence);
+    - EARLIER: current-season regular-season games before that (one SQL
+      aggregate per player);
+    - PRIOR: the latest earlier regular season, counted as 2 games.
+
+    Each current-season game belongs to exactly one bucket.
+  - **Prior influence decays monotonically:** its share is `2/(n + 2)` for
+    n current-season games, so it falls with every game. A bucket without
+    games weighs nothing; a bucket with games but no computable Yahoo FP/G
+    makes the value unavailable (never zero-filled).
+  - **Prior history never establishes eligibility:**
+    - the sample gates read only the Last 14 Days sample;
+    - a weekly ranking value still needs fresh Last 14 Days games;
+    - the prior never stands in for current-season games;
+    - the 7-day prior import rule is unchanged.
+  - **The backend owns production provenance.** `RankingEvidence.buckets`,
+    `ProductionBasis.buckets` and `MeasuredProduction.buckets/label/math`
+    carry each bucket's games, FP/G, weight in games, share, season and
+    dates plus the exact arithmetic. The page renders them and never
+    computes a weight.
+  - Rest of Season Outlook is unchanged: Season Evidence ranking, and
+    decision support shrinks this season toward the prior counted as 10
+    games.
+  - `PRIOR_GAMES = 2` comes from a read-only observational backtest of the
+    2026-27 games with a selection rule fixed before the run. Re-evaluate it
+    when more current-season games exist.
+  - Replaced: Phase 7.1 and earlier weighted the last 14 days `n/(n+10)`
+    against the prior season and ignored earlier current-season games, so
+    the prior kept at least 55.6% of every weekly value all season.
 - **Phase 7: decision integrity** (model `waiver-decision-integrity-phase7`;
   **deployed** 2026-11-21 16:36 UTC from commit `a9a0367`, `api` and
-  `frontend` only, no migration; rollback images tagged `pre-phase7`). See
+  `frontend` only, no migration; rollback images tagged `pre-phase7`;
+  replaced in production by Phase 7.1 at 21:46 UTC the same day). See
   `docs/sessions/2026-11-21.md`.
-  - **Open gap (found in the deploy acceptance; fixed locally in Phase 7.1,
-    NOT deployed or committed):** deployed Phase 7's Compare a Specific Drop
-    "Top measured option" (`top_measured_candidate_id`) and
-    `selected_player_result` use the raw net. They can name a refuted pair
-    (13 of 64 drop × horizon views on 2026-11-21). Recommendation surfaces
-    are not affected.
-  - **Phase 7.1 contract (local, `waiver-decision-integrity-phase7.1`):**
+  - **Closed gap (found in the Phase-7 deploy acceptance; fixed by Phase
+    7.1):** Phase 7's Compare a Specific Drop "Top measured option"
+    (`top_measured_candidate_id`) and `selected_player_result` used the raw
+    net, so they could name a refuted pair (13 of 64 drop × horizon views on
+    2026-11-21). Recommendation surfaces were not affected.
+  - **Phase 7.1 contract** (`waiver-decision-integrity-phase7.1`;
+    **deployed** 2026-11-21 21:46 UTC from commit `7a02a4f`, `api` and
+    `frontend` only, no migration; rollback images tagged `pre-phase71`;
+    production acceptance: 64 views, 0 violations, global BEST MOVES
+    unchanged):
     - For an explicit drop, `WaiverBoard.drop_summary` (`build_drop_summary`)
       derives the answer from the cards' gated decisions in
       `replacement_order`, with the roster label's categories. Its `decision`
@@ -203,7 +247,9 @@
     - FRAGILE: schedule-compensated, and the window edge is under one add
       game;
     - PRIOR-SEASON DRIVEN: the weekly blend, where the add trails on raw last
-      14 days and the current season;
+      14 days and the current season (since Phase 8: a prior in either
+      player's value; a side without a prior is described as having no
+      prior-season component);
     - "Dropping is permanent": a short horizon where the drop has the higher
       current-season FP/G.
   - **Text** names only components in the common mask with a positive
@@ -287,8 +333,9 @@
     - The first supported row equals the drop board's best add (`pair_order`
       for the fixed drop).
     - The list always includes the top measured option (raw leader) and the
-      best valid replacement; in Phase 7.1 (local) the page names the raw
-      leader only as the subordinate highest raw model comparison.
+      best valid replacement; since Phase 7.1 (deployed 2026-11-21 21:46
+      UTC) the page names the raw leader only as the subordinate highest raw
+      model comparison.
     - The frontend never re-sorts it.
     - It does not touch the optimizer, the no-drop board or
       `decision_priority`.
@@ -458,11 +505,14 @@
   and potential targets say CHECK IN YAHOO and list exact blockers; never
   label them ADD, STREAM or MUST ADD. With ADD + DROP and no supported pair,
   a best measured option must out-produce the lowest-producing roster player.
-- Measured production for comparison is Yahoo-rule PPG from the persisted,
+- Model production value for comparison is Yahoo-rule FP/G from the persisted,
   contract-verified scoring settings even when they are past the 24-hour
-  rule; the 14-day sample (weekly modes, when present) or current season is
-  shrunk toward prior-season production with weight n/(n+10); without prior
-  history at least 4 current-season games are required. Staleness is
+  rule. Weekly modes use the ranking's season blend (`production.py`, Phase
+  8: every current-season game once, prior season as 2 games); Rest of Season
+  Outlook shrinks this season toward the prior counted as 10 games. Phase 7.1
+  and earlier shrank the 14-day sample or current season toward prior-season
+  production with weight n/(n+10). Without prior history at least 4
+  current-season games are required. Staleness is
   labeled, never hidden. O/OFS/NA, unresolved identity and players on another
   team's saved roster are never targets.
 - **POTENTIAL TARGETS TO CHECK IN YAHOO** exist only while league-wide
@@ -710,10 +760,16 @@
   fit uses existing Yahoo eligibility/slot maximum matching. Opportunity uses
   the qualified unique role sub-evidence above; unsupported opportunity is
   omitted through the existing common component mask. Hold labels are descriptive heuristics.
-- Weekly/Next 7 Days production uses descriptive shrinkage when supported
-  fresh independent prior-season history exists: recent PPG weight `n/(n+10)`,
-  prior-season PPG weight `10/(n+10)`. No prior-season substitute for missing
-  or stale recent logs. Without supported history, raw recent evidence
+- Weekly production (Rest of Week, Next 7 and Next 14 Days; Phase 8, see the
+  Phase 8 invariants above): `production.season_blend` counts every
+  persisted current-season game once in exactly one bucket (RECENT = last 14
+  days, EARLIER = before them, from one per-player SQL aggregate of the
+  scoring fields) beside the fresh prior season counted as `PRIOR_GAMES = 2`
+  games; buckets, shares and the exact arithmetic are in `ranking_value`,
+  `ProductionBasis.buckets` and `MeasuredProduction.buckets/label/math`.
+  Phase 7.1 and earlier: recent PPG weight `n/(n+10)`, prior-season PPG
+  weight `10/(n+10)`, earlier current-season games ignored. No prior-season
+  substitute for missing or stale recent logs. Without supported history, raw recent evidence
   remains limited evidence. Season Evidence remains latest eligible historical
   fantasy PPG, never a projection. Neither historical sample size nor shrinkage
   can establish current-season recommendation eligibility.
@@ -864,11 +920,16 @@
     and host pressure (Prometheus with node-exporter and cAdvisor on `:9090`).
     Start the browser before warming the API with one internal non-abandoned
     read: Chromium's start-up pushed the API back into swap and reproduced
-    the incident.
+    the incident. Then let I/O pressure settle again before the first page
+    load: on 2026-11-21 a page load right after a 122 s warm-up (I/O
+    pressure 42–72%) still lost its queued best-moves read to nginx's 60 s
+    (504); after pressure settled the same test passed.
   - A refresh POST whose client timed out can still start the job later.
   - Heavy-read admission (one at a time, cancel on disconnect) is **deployed**
     (2026-11-15 14:50 UTC; rollback tag
-    `fantasy-basketball-gm-api:pre-waiver-reliability`). It bounds the damage
+    `fantasy-basketball-gm-api:pre-waiver-reliability`, which now predates
+    Phases 7 and 7.1 and must not be used to roll back today's pair). It
+    bounds the damage
     from overlapping and abandoned reads but does not fix the host.
     Keeping the API resident (more RAM, swap off the rotational disk, or a
     no-swap limit for the `api` container) remains the infrastructure fix.

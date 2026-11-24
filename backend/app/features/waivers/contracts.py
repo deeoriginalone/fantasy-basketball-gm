@@ -88,12 +88,14 @@ FORM_REASON_LABELS: dict[str, str] = {
     "SCORING_UNSUPPORTED": "Scoring settings unavailable",
     "NO_PREVIOUS_SEASON": "No previous-season stats",
 }
-ProductionBasisCode = Literal["RECENT_BLENDED", "RECENT_ONLY", "SEASON_EVIDENCE", "PREVIOUS_SEASON_FALLBACK", "UNAVAILABLE"]
+ProductionBasisCode = Literal["CURRENT_SEASON_BLENDED", "CURRENT_SEASON_ONLY", "SEASON_EVIDENCE", "PREVIOUS_SEASON_FALLBACK",
+    "UNAVAILABLE"]
+ProductionBucketKey = Literal["RECENT", "EARLIER", "CURRENT_SEASON", "PRIOR"]
 EvidenceDimensionKey = Literal["PRODUCTION_SAMPLE", "CURRENT_ROLE", "SCHEDULE", "SOURCE_FRESHNESS", "TRANSACTION_VERDICT"]
 RESOLVED_IDENTITY_STATES = frozenset({
     "EXACT_ID", "EXACT_NAME_TEAM", "NORMALIZED_NAME_TEAM", "KNOWN_ALIAS_TEAM", "TEAM_CHANGE_SUPPORTED",
 })
-MODEL_VERSION = "waiver-decision-integrity-phase7.1"
+MODEL_VERSION = "waiver-season-blend-phase8"
 
 
 class Evidence(BaseModel):
@@ -123,20 +125,40 @@ class ValueEvidence(BaseModel):
     scoring_contributions: dict[str, float] = Field(default_factory=dict)
 
 
+class ProductionBucket(BaseModel):
+    """One non-overlapping evidence bucket behind a production value: each game counts in exactly one bucket.
+
+    `weight_games` is the bucket's weight in the mean, in games: every real current-season game weighs one, the prior
+    season a fixed number of games. A bucket without games or without a computable value weighs nothing (its value
+    stays null, never zero)."""
+    key: ProductionBucketKey
+    label: str
+    games: int = 0
+    weight_games: float = 0
+    value: float | None = None
+    share: float = 0
+    season: str | None = None
+    first_game: date | None = None
+    last_game: date | None = None
+
+
 class RankingEvidence(BaseModel):
     value: float | None = None
     recent_weight: float | None = None
+    prior_weight: float | None = None
     historical_value: float | None = None
     historical_games: int = 0
     historical_season: str | None = None
+    buckets: list[ProductionBucket] = Field(default_factory=list)
     label: str = "Production ranking unavailable"
 
 
 class MeasuredProduction(BaseModel):
     """Non-actionable Yahoo-rule production used only to compare players for decision support.
 
-    The current sample is shrunk toward independent prior-season production with the model's
-    existing n/(n+10) weight. Import age never removes the value; it is labeled instead.
+    Weekly horizons use the ranking's season blend (every current-season game once, the prior season as
+    production.PRIOR_GAMES games); Rest of Season Outlook shrinks this season toward the prior season with ten games.
+    `buckets` and `math` carry the exact arithmetic. Import age never removes the value; it is labeled instead.
     """
     value: float | None = None
     comparable: bool = False
@@ -151,6 +173,9 @@ class MeasuredProduction(BaseModel):
     state: QualityState = "unavailable"
     as_of: datetime | None = None
     sample_label: SampleLabel = "NO CURRENT-SEASON EVIDENCE"
+    buckets: list[ProductionBucket] = Field(default_factory=list)
+    label: str = ""
+    math: str = ""
     detail: str = ""
 
 
@@ -442,8 +467,9 @@ class DataGap(BaseModel):
 
 class ProductionBasis(BaseModel):
     """The per-game Yahoo-rule production a comparison actually used (the value behind the production percentile),
-    with its provenance. Weekly horizons blend the last 14 days with the prior season (n/(n+10)); Rest of Season
-    Outlook uses current-season Season Evidence. Historical evidence, never a projection."""
+    with its provenance. Weekly horizons count every current-season game once beside the prior season counted as
+    production.PRIOR_GAMES games (`buckets`); Rest of Season Outlook uses current-season Season Evidence. Historical
+    evidence, never a projection."""
     value: float | None = None
     basis: ProductionBasisCode = "UNAVAILABLE"
     label: str = "Production unavailable"
@@ -457,6 +483,7 @@ class ProductionBasis(BaseModel):
     prior_weight: float | None = None
     current_season_value: float | None = None
     current_season_games: int = 0
+    buckets: list[ProductionBucket] = Field(default_factory=list)
     math: str = ""
 
 

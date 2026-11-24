@@ -34,6 +34,7 @@ from app.features.waivers.contracts import (
     PairExplanation,
     ProductionBasis,
 )
+from app.features.waivers.production import blend_label, blend_math
 
 NET_DISPLAY_DECIMALS = 2
 CALCULATION_TOLERANCE = 1e-5
@@ -57,10 +58,6 @@ def signed(value: float | None, digits: int = NET_DISPLAY_DECIMALS) -> str:
 
 def _games(count: int | None) -> str:
     return "unknown games" if count is None else f"{count} game{'' if count == 1 else 's'}"
-
-
-def _fraction(games: int) -> str:
-    return f"{games}/{games + 10}"
 
 
 def _form_value(row: Candidate, key: str) -> tuple[float | None, int]:
@@ -90,24 +87,18 @@ def production_basis(row: Candidate, mode: Mode) -> ProductionBasis:
         return ProductionBasis(value=round(value, 2), basis=basis, label=label, window_value=row.ros.value,
             window_games=row.ros.games, window_weight=1.0,
             math=f"{value:.2f} = {row.ros.season} Yahoo FP/G over {_games(row.ros.games)} (no blending).", **common)
-    games = row.recent.games
-    weight = ranking.recent_weight
-    if weight is not None and ranking.historical_value is not None and weight < 1:
-        prior_weight = 1 - weight
-        math = (f"{weight:.3f} ({_fraction(games)}) x {row.recent.value:.2f} last 14 days ({_games(games)}) + "
-            f"{prior_weight:.3f} (10/{games + 10}) x {ranking.historical_value:.2f} {ranking.historical_season} "
-            f"({_games(ranking.historical_games)}) = {value:.2f}")
-        prior_share = round(prior_weight * 100)
-        label = (f"Last 14 days blended with {ranking.historical_season} ({prior_share}% previous season)"
-            + (": mostly previous-season evidence" if prior_weight > .5 else ""))
-        return ProductionBasis(value=round(value, 2), basis="RECENT_BLENDED", label=label, window_value=row.recent.value,
-            window_games=games, window_weight=round(weight, 4), prior_value=ranking.historical_value,
-            prior_games=ranking.historical_games, prior_season=ranking.historical_season,
-            prior_weight=round(prior_weight, 4), math=math, **common)
-    return ProductionBasis(value=round(value, 2), basis="RECENT_ONLY",
-        label=f"Last 14 days only ({_games(games)}; no supported prior-season history)", window_value=row.recent.value,
-        window_games=games, window_weight=1.0, math=f"{value:.2f} = last 14 days over {_games(games)} (no blending).",
-        **common)
+    buckets = ranking.buckets
+    if not buckets:
+        return ProductionBasis(value=round(value, 2), basis="CURRENT_SEASON_ONLY",
+            label="Current-season production (no bucket breakdown supplied)", window_value=row.recent.value,
+            window_games=row.recent.games, window_weight=1.0, math=f"{value:.2f} Yahoo FP/G", **common)
+    recent = next(bucket for bucket in buckets if bucket.key == "RECENT")
+    prior = next((bucket for bucket in buckets if bucket.key == "PRIOR" and bucket.share > 0), None)
+    return ProductionBasis(value=round(value, 2), basis="CURRENT_SEASON_BLENDED" if prior else "CURRENT_SEASON_ONLY",
+        label=blend_label(buckets), window_value=row.recent.value, window_games=recent.games, window_weight=recent.share,
+        prior_value=prior.value if prior else None, prior_games=prior.games if prior else 0,
+        prior_season=prior.season if prior else None, prior_weight=prior.share if prior else None,
+        buckets=buckets, math=blend_math(buckets, value), **common)
 
 
 def _contributions(comparison: DropOption) -> list[ComponentContribution]:
@@ -123,9 +114,10 @@ def _contributions(comparison: DropOption) -> list[ComponentContribution]:
 
 
 def basis_short(basis: ProductionBasis | None) -> str:
-    return {"RECENT_BLENDED": "last 14 days blended with the previous season", "RECENT_ONLY": "last 14 days",
-        "SEASON_EVIDENCE": "current-season Season Evidence", "PREVIOUS_SEASON_FALLBACK": "previous-season fallback",
-        }.get(basis.basis if basis is not None else "", "unavailable basis")
+    return {"CURRENT_SEASON_BLENDED": "this season's games blended with the previous season",
+        "CURRENT_SEASON_ONLY": "this season's games", "SEASON_EVIDENCE": "current-season Season Evidence",
+        "PREVIOUS_SEASON_FALLBACK": "previous-season fallback"}.get(basis.basis if basis is not None else "",
+        "unavailable basis")
 
 
 def _component_reason(key: str, contribution: float, explanation: PairExplanation, horizon: str) -> str:
@@ -262,8 +254,9 @@ def explain_comparison(
         gap = explanation.window_points_gap
         if gap is not None and gap < add_basis.value:
             explanation.fragile = True
+    # The production edge contradicts both current views and a prior season is in either value: the prior decided it.
     if (mode != "ros" and drop is not None and by_key.get("player_value", 0) > CALCULATION_TOLERANCE
-            and add_basis.basis == "RECENT_BLENDED" and drop_basis is not None):
+            and drop_basis is not None and "CURRENT_SEASON_BLENDED" in {add_basis.basis, drop_basis.basis}):
         recent_trails = (add.recent.value is not None and drop.recent.value is not None
             and add.recent.value < drop.recent.value)
         season_trails = (add_basis.current_season_value is not None and drop_basis.current_season_value is not None
@@ -288,10 +281,8 @@ def _write_text(explanation: PairExplanation, by_key: dict[str, float], horizon:
             f"{add.player_name} game ({add_basis.value:.1f}); one missed game reverses it.")
     if explanation.prior_season_driven and drop_basis is not None and drop is not None:
         tradeoffs.append(
-            f"PRIOR-SEASON DRIVEN: {add.player_name}'s {add_basis.value:.1f} is {round((add_basis.prior_weight or 0) * 100)}% "
-            f"{add_basis.prior_season} ({add_basis.prior_value:.1f}); {drop.player_name}'s {drop_basis.value:.1f} is "
-            f"{round((drop_basis.prior_weight or 0) * 100)}% {drop_basis.prior_season} ({drop_basis.prior_value:.1f}). On "
-            f"current-season evidence {add.player_name} trails: last 14 days {add.recent.value:.1f} vs "
+            f"PRIOR-SEASON DRIVEN: {_prior_part(add.player_name, add_basis)}; {_prior_part(drop.player_name, drop_basis)}. "
+            f"On current-season evidence {add.player_name} trails: last 14 days {add.recent.value:.1f} vs "
             f"{drop.recent.value:.1f}, this season {add_basis.current_season_value:.1f} vs "
             f"{drop_basis.current_season_value:.1f} Yahoo FP/G.")
     if (drop is not None and net > 0 and explanation.horizon != HORIZON_LABELS["ros"] and drop_basis is not None
@@ -359,6 +350,12 @@ def _write_text(explanation: PairExplanation, by_key: dict[str, float], horizon:
     cost_text = f" Costs: {', '.join(costs)}." if costs else ""
     explanation.statement = (f"{explanation.primary_reason}" + (f"; also {', '.join(others)}" if others else "")
         + f".{cost_text} Net modeled change: {signed(net)}.{schedule_note}")
+
+
+def _prior_part(name: str, basis: ProductionBasis) -> str:
+    if basis.prior_weight and basis.prior_value is not None:
+        return f"{name}'s {basis.value:.1f} is {round(basis.prior_weight * 100)}% {basis.prior_season} ({basis.prior_value:.1f})"
+    return f"{name}'s {basis.value:.1f} has no prior-season component"
 
 
 def short_note(explanation: PairExplanation | None) -> str:

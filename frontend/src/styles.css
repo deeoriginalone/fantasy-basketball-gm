@@ -814,3 +814,4 @@ h1, h2, p { margin-top: 0; }
 .waiver-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .waiver-option-reason { margin: 0 0 8px; font-size: .86rem; overflow-wrap: anywhere; }
 .waiver-tradeoff ul { margin: 4px 0 0; padding-left: 18px; }
+.waiver-buckets { margin: 4px 0 0; padding-left: 18px; font-size: .82rem; color: var(--muted, #687570); overflow-wrap: anywhere; }

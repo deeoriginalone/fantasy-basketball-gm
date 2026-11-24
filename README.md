@@ -59,13 +59,17 @@ See the [gated follow-ups](docs/status/next-actions.md).
   409 contract failures remain visible errors, never HOLD or empty-success
   fallbacks. A timeout shows WAIVER ANALYSIS TIMED OUT with RETRY ANALYSIS
   and REFRESH WAIVER DATA, never raw proxy HTML. Production runs model
-  `waiver-horizon-evidence-phase6`: Phase 6 deployed 2026-11-14, the
-  explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and the API
-  heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
+  `waiver-decision-integrity-phase7.1` (Phase 7.1 deployed 2026-11-21 21:46
+  UTC, after Phase 7 at 16:36 UTC the same day). Earlier: Phase 6 deployed
+  2026-11-14, the explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and
+  the API heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
   user-initiated. The Waiver Center is PC-only: browser acceptance runs at
   desktop 1440 × 1000, with the mobile tests kept but not required. The
   shared 7.3 GB host, with swap on its rotational disk, remains a capacity
-  limit.
+  limit. Phase 8, model `waiver-season-blend-phase8` (2026-11-24), replaces
+  the weekly production blend. It is validated and committed for
+  deployment; production keeps Phase 7.1 until the Phase 8 deployment is
+  recorded: see Phase 8 below.
 - **Yahoo Mock Practice:** one-time Windows observer install/pair, then join a
   12-team Yahoo mock, paste its draft URL, and Connect. Verified rounds and
   manager slot are required. Observations pass through the
@@ -326,9 +330,31 @@ explanation does not hold:
   - lineup gaps in dates;
   - "Watch only" vs "Keep" roster labels.
 
+**Phase 8: weekly production season blend** (model
+`waiver-season-blend-phase8`; 2026-11-24 read-only audit, test-first
+implementation and local validation; committed for deployment, which is
+pending; production runs Phase 7.1 until then; no migration; see
+[the session notes](docs/sessions/2026-11-24.md)):
+
+- Rest of Week, Next 7 Days and Next 14 Days value every persisted
+  current-season game once, in exactly one bucket (last 14 days, earlier this
+  season), beside the fresh prior season counted as **2 games**:
+  `(sum of current-season game FP + 2 x prior FP/G) / (games + 2)`. The prior's
+  share falls with every game; earlier current-season games now count.
+- Why: the Phase 7.1 blend shrank only the last 14 days toward the prior season
+  with 10 games of weight, so the prior kept at least 55% of every weekly value
+  all season and earlier current-season games never counted. On the persisted
+  2026-27 games, a 10-game prior was significantly worse than about 2 games on
+  ordering accuracy, rank correlation and absolute error for the next 7 and 14
+  days; a recency multiplier added nothing once the prior's share was fixed.
+- Eligibility is unchanged (sample gates still read the Last 14 Days sample);
+  Rest of Season Outlook is unchanged. The page shows each bucket's games and
+  share and the exact arithmetic; PRIOR-SEASON DRIVEN stays disclosed.
+
 **Phase 7.1: Compare a Specific Drop answers from the gate** (model
-`waiver-decision-integrity-phase7.1`; implemented and validated locally
-2026-11-21; **NOT deployed and NOT committed**; see the
+`waiver-decision-integrity-phase7.1`; **deployed** 2026-11-21 21:46 UTC from
+commit `7a02a4f` and verified read-only; no migration; rollback images are
+tagged `pre-phase71`; see the
 [current-state report](docs/status/current-state.md)):
 
 - The selected drop's answer comes from a backend `drop_summary` built from
@@ -831,15 +857,17 @@ Every listed player gets one classification and a backend `decision_rank`:
   scoring or stats). Players on another team's saved roster are counted, never
   targeted.
 
-Measured production is Yahoo-rule fantasy PPG from the persisted,
+Model production value is Yahoo-rule FP/G from the persisted,
 contract-verified scoring settings (used even when those settings are past
-the 24-hour freshness rule). The current sample is the last 14 days in Rest of
-Week and Next 7 Days when it has games, otherwise this season; it is shrunk
-toward independent prior-season production with weight n/(n+10). Without
-prior-season history at least 4 current-season games are required. Import age
-is labeled stale, never hidden. Ranking: confirmed availability, then a fit
-for a HIGH need, then measured production, needs covered, current-season games
-and player ID.
+the 24-hour freshness rule). In Rest of Week, Next 7 Days and Next 14 Days
+every current-season game counts once (last 14 days and earlier this season)
+beside the previous season counted as 2 games (Phase 8; Phase 7.1 and earlier
+shrank only the last 14 days toward the prior season with weight n/(n+10)).
+In Rest of Season Outlook this season is shrunk toward the previous season
+counted as 10 games. Without prior-season history at least 4 current-season
+games are required. Import age is labeled stale, never hidden. Ranking:
+confirmed availability, then a fit for a HIGH need, then model production value,
+needs covered, current-season games and player ID.
 
 Only actionable-availability candidates (see the availability classes above)
 can be SUPPORTED ACTION, BEST MEASURED OPTION, WATCH or MEASURED.
@@ -1117,12 +1145,16 @@ Model version `waiver-horizon-evidence-phase6` (Phase 6 keeps the Phase-5 contra
   scored only with supported persisted Yahoo points modifiers. Missing required
   stats are not zero-filled. The oldest selected log import must be within seven
   days and the latest selected game date within seven days.
-- Weekly and Next 7 Days player value use recent PPG blended with independent
-  prior-season regular-season PPG when fresh supported history exists:
-  recent weight `n/(n+10)`, historical weight `10/(n+10)`. This is descriptive
-  shrinkage, not a projection or calibrated confidence. Prior-season history
-  does not substitute for missing/stale recent logs. Without supported prior
-  history, raw recent value remains explicitly limited evidence.
+- Weekly player value (Rest of Week, Next 7 and Next 14 Days; Phase 8):
+  every current-season game once (last 14 days + earlier this season, no game
+  in both) beside fresh prior-season regular-season FP/G counted as 2 games,
+  `(sum of current-season game FP + 2 x prior FP/G) / (games + 2)`, so the
+  prior's share `2/(games + 2)` falls with every game. Phase 7.1 and earlier
+  used recent weight `n/(n+10)` and historical weight `10/(n+10)` and ignored
+  earlier current-season games. This is descriptive shrinkage, not a
+  projection or calibrated confidence. A weekly
+  value still needs fresh Last 14 Days games; prior-season history never
+  substitutes for missing or stale recent logs or for current-season games.
   Current-season evidence quality is backend-owned: **20+ EXCELLENT,
   10-19 GOOD, 7-9 LIMITED, 4-6 VERY LIMITED, 1-3 INSUFFICIENT FOR STRONG
   RECOMMENDATION, 0 NO CURRENT-SEASON EVIDENCE**. This is not probability.
@@ -1220,7 +1252,9 @@ Model version `waiver-horizon-evidence-phase6` (Phase 6 keeps the Phase-5 contra
     stable internal ID, with unavailable comparisons last, so a higher-net
     WATCH never outranks a supported move.
   - Every row keeps its own decision and the selected drop, and the list
-    always includes the top measured option. Without a selected drop the
+    always includes the top measured option (the raw-net leader; since
+    Phase 7.1 the page names it only as the subordinate HIGHEST RAW MODEL
+    COMPARISON, never as the answer). Without a selected drop the
   board's `decision_priority` orders supported actions, then WATCH, HOLD and
   INSUFFICIENT EVIDENCE; within a tier, players filling a measured need come
   first, then net improvement, weighted overall score and ID. With open

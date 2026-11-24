@@ -39,13 +39,15 @@ from app.features.waivers.contracts import (
     availability_actionable,
     availability_class,
 )
+from app.features.waivers.production import PRIOR_GAMES, blend_label, blend_math, season_blend, weighted_blend
 from app.features.waivers.sample import SAMPLE_TIER_LABELS, sample_assessment, sufficient_sample
 from app.services.draft.player_status import recommendation_eligibility, status_is_supported, yahoo_status_label
 
 if TYPE_CHECKING:
     from app.features.waivers.service import Context
 
-# The model's existing descriptive shrinkage: n current games against ten prior-season games.
+# Rest of Season Outlook decision support: this season's games against ten prior-season games. Weekly horizons use the
+# season blend instead (production.PRIOR_GAMES).
 SHRINKAGE_GAMES = 10
 # Without prior-season history, fewer games are too noisy to rank (the VERY LIMITED boundary).
 MIN_UNSHRUNK_GAMES = 4
@@ -79,10 +81,12 @@ def group_title(noun: str, verdict: str | None) -> str:
     return f"BEST AVAILABLE {noun} — cannot evaluate yet"
 GROUP_POSITIONS = {"BEST_GUARD": {"PG", "SG"}, "BEST_WING_FORWARD": {"SF", "PF"}, "BEST_CENTER": {"C"}}
 METHOD = (
-    "Measured production is Yahoo-rule fantasy points per game (PTS + 1.2 REB + 1.5 AST + 3 BLK + 3 STL - TO) "
-    "from persisted NBA games. The current sample (the last 14 days when present in Rest of Week, Next 7 Days and Next 14 Days, "
-    "otherwise this season) is shrunk toward independent prior-season production with weight n/(n+10); without "
-    f"prior-season history at least {MIN_UNSHRUNK_GAMES} current-season games are required. Import age never hides a "
+    "Model production value is Yahoo-rule fantasy points per game (PTS + 1.2 REB + 1.5 AST + 3 BLK + 3 STL - TO) "
+    "from persisted NBA games. In Rest of Week, Next 7 Days and Next 14 Days every current-season game counts once (last "
+    "14 days and earlier this season) and the previous season counts as "
+    f"{PRIOR_GAMES} games; in Rest of Season Outlook this season is shrunk toward the previous season counted as "
+    f"{SHRINKAGE_GAMES} games. Without prior-season history at least {MIN_UNSHRUNK_GAMES} current-season games are "
+    "required. Import age never hides a "
     "value; it is labeled. Every featured option carries the backend verdict for its exact best comparison (SUPPORTED "
     "ADD, WATCH ONLY, NEAR TIE, DO NOT ADD or CANNOT EVALUATE) and, on a full roster, the exact drop. OTHER GOOD OPTIONS "
     "groups rank by that verdict first, then the group's own evidence, then the exact pair net. Only players absent "
@@ -115,43 +119,68 @@ def measured_production(
     scoring_available: bool,
     now: datetime,
     today: date,
+    earlier_value: float | None = None,
+    earlier_games: int = 0,
+    earlier_first: date | None = None,
+    earlier_last: date | None = None,
+    recent_first: date | None = None,
 ) -> MeasuredProduction:
-    """Comparable non-actionable production; staleness is labeled, never used to hide the value."""
+    """Comparable non-actionable production; staleness is labeled, never used to hide the value.
+
+    Weekly horizons use the ranking's season blend: the caller supplies the Last 14 Days and EARLIER buckets (omitted
+    EARLIER means no earlier games). Rest of Season Outlook shrinks this season's Season Evidence toward the prior."""
     prior = dict(prior_value=round(prior_value, 2) if prior_value is not None else None,
         prior_games=prior_games, prior_season=prior_season)
     if not scoring_available:
         return MeasuredProduction(state="unsupported", **prior,
             detail="Persisted Yahoo scoring modifiers are unavailable, so fantasy points cannot be measured.")
-    if mode != "ros" and recent_games and recent_value is not None:
-        basis, value, games, as_of = "RECENT", recent_value, recent_games, recent_as_of
-        stale = (as_of is None or now - as_of > timedelta(days=7)
-            or (recent_latest_game is not None and recent_latest_game < today - timedelta(days=7)))
-        source = f"Last 14 days: {value:.1f} in {games} game{'s' if games != 1 else ''}"
+    if mode != "ros":
+        blend = season_blend(recent_games=recent_games, recent_value=recent_value if recent_games else None,
+            earlier_games=earlier_games, earlier_value=earlier_value, prior_games=prior_games, prior_value=prior_value,
+            prior_season=prior_season, season=season, recent_first=recent_first, recent_last=recent_latest_game,
+            earlier_first=earlier_first, earlier_last=earlier_last)
+        if blend.value is None:
+            reason = ("Persisted current-season stats are incomplete for the Yahoo formula" if recent_games or earlier_games
+                else "Persisted current-season game logs are missing" if current_games
+                else "No current-season NBA games in persisted evidence")
+            return MeasuredProduction(state="missing", **prior,
+                detail=f"{reason}; a measured comparison needs this season's games.")
+        if recent_games:
+            basis, as_of = "RECENT", recent_as_of
+            stale = (as_of is None or now - as_of > timedelta(days=7)
+                or (recent_latest_game is not None and recent_latest_game < today - timedelta(days=7)))
+        else:
+            basis, as_of = "CURRENT_SEASON", current_as_of
+            stale = as_of is None or now - as_of > timedelta(days=7)
+        value, games, current = blend.value, blend.current_games, blend.current_value
+        weight, buckets = 1 - blend.prior_share, blend.buckets
     elif current_games and current_value is not None:
-        basis, value, games, as_of = "CURRENT_SEASON", current_value, current_games, current_as_of
+        basis, value, games, as_of, current = "CURRENT_SEASON", current_value, current_games, current_as_of, current_value
         stale = as_of is None or now - as_of > timedelta(days=7)
-        source = f"{season}: {value:.1f} in {games} game{'s' if games != 1 else ''}"
+        buckets = weighted_blend([("CURRENT_SEASON", games, value, float(games), None, None)], season,
+            (prior_games, prior_value, float(SHRINKAGE_GAMES), prior_season)).buckets
+        if prior_value is not None:
+            weight = games / (games + SHRINKAGE_GAMES)
+            value = weight * current_value + (1 - weight) * prior_value
+        else:
+            weight = 1.0
     else:
         reason = ("Persisted current-season stats are incomplete for the Yahoo formula"
             if current_games or recent_games else "No current-season NBA games in persisted evidence")
         return MeasuredProduction(state="missing", **prior,
             detail=f"{reason}; a measured comparison needs this season's games.")
-    if prior_value is not None:
-        weight = games / (games + SHRINKAGE_GAMES)
-        measured = weight * value + (1 - weight) * prior_value
-        source += f", shrunk toward {prior_season} ({prior_value:.1f} in {prior_games} games) with weight {games}/{games + SHRINKAGE_GAMES}"
-    else:
-        weight, measured = 1.0, value
     comparable = prior_value is not None or games >= MIN_UNSHRUNK_GAMES
-    detail = (f"{measured:.1f} measured Yahoo fantasy PPG. {source}. Imported {pacific_day(as_of)}"
+    label, math = blend_label(buckets), blend_math(buckets, value)
+    detail = (f"{value:.1f} Yahoo FP/G: {label}. {math}. Imported {pacific_day(as_of)}"
         + (" (stale)" if stale else "") + ". Historical, not a projection.")
     if not comparable:
         detail += (f" Without prior-season history, at least {MIN_UNSHRUNK_GAMES} current-season games are needed "
             "to compare this player.")
     return MeasuredProduction(
-        value=round(measured, 2), comparable=comparable, basis=basis, current_value=round(value, 2),
+        value=round(value, 2), comparable=comparable, basis=basis, current_value=round(current, 2),
         current_games=games, current_season=season, current_weight=round(weight, 4), **prior,
-        state="stale" if stale else "available", as_of=as_of, sample_label=sample_label(games), detail=detail,
+        state="stale" if stale else "available", as_of=as_of, sample_label=sample_label(games), buckets=buckets,
+        label=label, math=math, detail=detail,
     )
 
 
@@ -375,9 +404,7 @@ class _Builder:
             items.append("All starting positions are covered; this adds depth.")
         measured = row.measured
         if measured.value is not None:
-            items.append(f"{measured.value:.1f} measured Yahoo fantasy PPG from {measured.current_games} current-season "
-                f"game{'s' if measured.current_games != 1 else ''}"
-                + (f", blended with {measured.prior_season}" if measured.prior_value is not None else "") + ".")
+            items.append(f"Model production value {measured.value:.1f} Yahoo FP/G: {measured.label}.")
         games, state = _games(row)
         if games is not None:
             items.append(f"{games} scheduled game{'s' if games != 1 else ''} in {_window_label(self.ctx.mode)}"
@@ -388,7 +415,7 @@ class _Builder:
                 f" covers {len(fills)} needs." if len(fills) >= 2 else "."))
         rank, count = self.roster_rank(row)
         if rank is not None:
-            items.append(f"Would rank {rank} of {count} on your roster by measured fantasy PPG.")
+            items.append(f"Would rank {rank} of {count} on your roster by model production value.")
         return items
 
     def option(self, row: Candidate, classification: DecisionSupportClass, rank: int, reason: str,
@@ -535,11 +562,11 @@ class _Builder:
         for row in best:
             fills = self.fills(row)
             order.append((row, "BEST_MEASURED_OPTION", "Strongest measured option" + (
-                f" for the {fills[0].label} need" if fills else "") + f": {row.measured.value:.1f} Yahoo fantasy PPG."))
+                f" for the {fills[0].label} need" if fills else "") + f": model production value {row.measured.value:.1f} Yahoo FP/G."))
         for tier in ("WATCH", "MEASURED"):
             order.extend((row, tier, featured.get(row.player_id) or self.reason(row, tier, floor))
                 for row in ranked_all if classes[row.player_id] == tier)
-        order.extend((row, "POTENTIAL_TARGET", f"Measured {row.measured.value:.1f} Yahoo fantasy PPG; "
+        order.extend((row, "POTENTIAL_TARGET", f"Model production value {row.measured.value:.1f} Yahoo FP/G; "
             f"{AVAILABILITY_CLASS_LABELS[availability_class(row)].lower()} — check in Yahoo before acting.")
             for row in ranked_checkable)
         order.extend((row, "UNAVAILABLE", reason + "; this player cannot be compared.")
@@ -596,7 +623,7 @@ class _Builder:
                 "Decision support never upgrades a player to ADD, STREAM or MUST ADD; supported actions use the strict evidence gates.",
                 "Only players with confirmed Yahoo availability are featured. POTENTIAL TARGETS were absent from every saved league roster when it was imported; they may have been added since.",
                 "Players on another team's saved roster are never targets. A fresh, verified Yahoo record without a status field is NO CURRENT YAHOO DESIGNATION, not a medical-health guarantee; any other blank Yahoo status remains UNKNOWN, not healthy. Yahoo O/OFS/NA players and unresolved identities are never targets.",
-                "Measured production is historical Yahoo-rule fantasy PPG, not a projection. Stale imports are labeled, not hidden.",
+                "Model production value is historical Yahoo-rule FP/G (this season's games beside the previous season counted as a fixed number of games), not a projection. Stale imports are labeled, not hidden.",
             ],
         )
 
@@ -631,33 +658,33 @@ class _Builder:
 
     def group_reason(self, key: OptionGroupKey, row: Candidate) -> str:
         rank, count = self.roster_rank(row)
-        context = f" Would rank {rank} of {count} on your roster by measured fantasy PPG." if rank is not None else ""
+        context = f" Would rank {rank} of {count} on your roster by model production value." if rank is not None else ""
         return self._group_reason(key, row) + context
 
     def _group_reason(self, key: OptionGroupKey, row: Candidate) -> str:
         value = _ppg(row.measured.value)
         if key == "BEST_MULTI_POSITION":
             fills = self.fills(row)
-            return (f"Covers {len(fills)} needs; measured {value} Yahoo fantasy PPG." if len(fills) >= 2
-                else f"Most flexible option in its verdict tier; measured {value} Yahoo fantasy PPG.")
+            return (f"Covers {len(fills)} needs; model production value {value} Yahoo FP/G." if len(fills) >= 2
+                else f"Most flexible option in its verdict tier; model production value {value} Yahoo FP/G.")
         if key == "BEST_SHORT_TERM":
             games, state = _games(row)
             return (f"Most scheduled games in {_window_label(self.ctx.mode)} within its verdict tier ({games}"
-                + (", stale schedule" if state == "stale" else "") + f"); measured {value} Yahoo fantasy PPG.")
+                + (", stale schedule" if state == "stale" else "") + f"); model production value {value} Yahoo FP/G.")
         if key == "BEST_LONGER_TERM":
             return (f"Strongest Season Evidence in its verdict tier ({_ppg(row.ros.value)} Yahoo FP/G, "
                 f"{LONGER_TERM_MIN_GAMES}+ games across this season and last); historical, not a projection.")
         noun = {"BEST_GUARD": "guard", "BEST_WING_FORWARD": "wing / forward", "BEST_CENTER": "center"}[key]
-        return f"Top available {noun} by verdict, then exact pair net; measured {value} Yahoo fantasy PPG."
+        return f"Top available {noun} by verdict, then exact pair net; model production value {value} Yahoo FP/G."
 
     def reason(self, row: Candidate, tier: str, floor: float | None) -> str:
         value = row.measured.value
         if row.recommended_action_type == "WATCH":
             return "Positive measured impact, but the sample is too small for a supported add."
         if tier == "WATCH":
-            return (f"{value:.1f} Yahoo fantasy PPG" + (", above your lowest-producing roster player"
+            return (f"Model production value {value:.1f} Yahoo FP/G" + (", above your lowest-producing roster player"
                 if floor is not None and value > floor else "") + "; ranks behind the featured options.")
-        return f"Measured {value:.1f} Yahoo fantasy PPG."
+        return f"Model production value {value:.1f} Yahoo FP/G."
 
 
 def _ppg(value: float | None) -> str:

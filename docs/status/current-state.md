@@ -1,10 +1,214 @@
-# CURRENT STATE — Phase 7.1 Compare-a-Drop Gate Fix — Implemented and Validated Locally (NOT DEPLOYED, NOT COMMITTED) — 2026-11-21
+# CURRENT STATE — Phase 8 Weekly Production Season Blend — Validated and Committed, Deployment Pending — 2026-11-24
 
-**STATUS: LOCAL ONLY.** Production still runs Phase 7 (below). The Phase 7.1
-fix (model `waiver-decision-integrity-phase7.1`) is in the working tree on
-top of `a9a0367`. It is **not committed and not deployed**; both need explicit
-authorization. Full evidence: `qa-work/2026-11-21-phase71-fix/phase71-report.md`
-(local, untracked).
+**STATUS: VALIDATED LOCALLY AND COMMITTED FOR DEPLOYMENT; NOT YET DEPLOYED.**
+Model `waiver-season-blend-phase8` is the newest development state. Its
+source commit is "fix: use current-season evidence in waiver production
+blend". Production runs `waiver-decision-integrity-phase7.1` (next section)
+until a Phase 8 deployment record is added here. No migration.
+
+- Details: `docs/sessions/2026-11-24.md`. Full audit:
+  `qa-work/2026-11-24-weekly-blend-audit/weekly-blend-report.md` (local,
+  untracked).
+
+### Method (weekly horizons only)
+
+- Rest of Week, Next 7 Days and Next 14 Days value each player at
+  `(sum of current-season game Yahoo FP + 2 × prior-season FP/G) /
+  (current-season games + 2)`.
+- Every persisted current-season regular-season game counts once, in exactly
+  one bucket: RECENT (last 14 days) or EARLIER (before them). The fresh prior
+  season is a third bucket counted as 2 games, so its share `2/(games + 2)`
+  falls with every game.
+- `production.py` is the canonical production basis. Ranking, board,
+  optimizer, replacements and impact use one value; decision support
+  computes the same blend from the same buckets (as before Phase 8 it also
+  scores with persisted settings past 24 hours and keeps a prior older than
+  7 days). The backend returns each bucket's games, FP/G, share and dates
+  plus the exact arithmetic; the page renders them and computes no weight.
+- Unchanged: the sample eligibility gates (Last 14 Days sample only), the
+  fresh-Last-14-Days requirement, the 7-day prior freshness rule, Rest of
+  Season Outlook, the Phase 7/7.1 explanation gate and verdicts, schedule,
+  fit, opportunity, drop policy and admission. No player-specific rule.
+
+### Why (read-only audit of the 2026-11-21 snapshot)
+
+- The Phase 7.1 weekly value, `n/(n+10) × last 14 days + 10/(n+10) × prior
+  season`, kept at least 55.6% prior weight all season and ignored 53% of
+  current-season games.
+- It made 11 SUPPORTED ADDs of an add who trailed the drop on both Last 14
+  Days and the current season, including the featured Rest of Week move
+  DeRozan / Dunn (+0.589).
+- On a backtest against the next 7 and 14 days, counting every game with a
+  prior of about 2 games beat the 10-game blend on ordering, rank correlation
+  and absolute error. K = 2 came from a rule fixed before the run.
+
+### Expected effect (read-only shadow, same snapshot, clock 2026-11-21T18:29:21Z)
+
+| Horizon | Phase 7.1 | Phase 8 |
+|---|---|---|
+| Rest of Week | DeRozan / Dunn +0.589 (PRIOR-SEASON DRIVEN) | Tari Eason / Kevin Huerter +0.226 |
+| Next 7 Days | Keldon Johnson / Jarrett Allen +0.566 | Derrick Jones Jr. / Jarrett Allen +0.656 |
+| Next 14 Days | Keldon Johnson / Jarrett Allen +0.567 (FRAGILE) | Derrick Jones Jr. / Jarrett Allen +0.657 |
+| Rest of Season Outlook | Isaiah Jackson / Kevin Huerter +0.412 | unchanged |
+
+DeRozan / Dunn becomes DO NOT ADD (19.44 vs 23.21 FP/G, net −0.42), and all
+11 SUPPORTED double reversals disappear. These are dated shadow results;
+production evaluates its own clock.
+
+### Pre-commit validation (2026-11-24 09:23–09:31 UTC)
+
+| Suite | Result |
+|---|---|
+| Backend focused Phase-8 blend tests | 9 passed |
+| Backend waiver files (3) | 332 passed |
+| Full backend | 496 passed |
+| Frontend unit | 78 passed |
+| `tsc -b` / production build | pass / pass |
+| Desktop Playwright (1440 × 1000, 1 worker) | 25 passed |
+
+Backend on a disposable PostgreSQL on an internal-only network (source
+read-only, removed afterwards); frontend in the Playwright image with no
+network.
+
+# Phase 7.1 Compare-a-Drop Gate Fix — Deployed and Verified — 2026-11-21
+
+**STATUS: DEPLOYED AND VERIFIED (2026-11-21 21:46 UTC; 13:46 PST); in
+production until Phase 8 is deployed.** Model
+`waiver-decision-integrity-phase7.1` was deployed from commit `7a02a4f`
+("fix: make waiver drop summaries gate-aware"; at the time not pushed, with
+local `main` 2 ahead of `origin/main`).
+
+- Only `api` and `frontend` were recreated.
+- No migration, refresh, provider call, OAuth, Yahoo transaction or data
+  change came from this work. No weight, threshold, blend, schedule, gate or
+  drop policy changed, and no player-specific rule exists.
+- Full evidence: `qa-work/2026-11-21-phase71-deploy/deployment-acceptance.md`
+  (local, untracked).
+
+### Deployment
+
+- **Gate:**
+  - HEAD `a9a0367`; the 8 code and test files matched the Phase-7.1 report
+    and were last edited before its validation.
+  - The snapshot was unchanged since the 7.1 shadow (29 tables, 79,433
+    rows; identical counts, newest timestamps, write counters and
+    migrations).
+  - Backend: focused 18, waiver files 328, full 492 (disposable PostgreSQL
+    on an internal network).
+  - Frontend: unit 76/76, `tsc -b` and build pass (`index-uEroGjal.js`,
+    `index-DmobFuB1.css`).
+  - Desktop Playwright: focused 2/2, full 24/24 (1440 × 1000, one worker).
+- **Commit** `7a02a4f`: 13 files (+912/−74): 3 backend, 5 frontend, 5 docs.
+  - `git diff --check` clean; gitleaks v8.24.3: no leaks.
+  - The only `.env` value in added lines is the league key, already
+    committed in 13 files. `qa-work/` stays untracked.
+- **Backup:** `~/fantasy-gm-pre-phase71-20261121T213725Z.dump`.
+  - `pg_dump -Fc`, 138,259,118 bytes, mode 0600, SHA-256 `db6678cddd2c…`.
+  - `pg_restore --list`: 176 TOC entries, 29 TABLE and 29 TABLE DATA. The
+    archive's table inventory and COPY row counts equal production (29
+    tables, 79,433 rows). Nothing restored.
+- **Rollback tags:** matched to the running containers' platform manifests
+  and proven byte-identical.
+  - `fantasy-basketball-gm-api:pre-phase71`: index `01d2e3974298`,
+    linux/amd64 `7c71acc08224`. Its 104 `/app` files and `pip freeze` equal
+    the running Phase-7 API.
+  - `fantasy-basketball-gm-frontend:pre-phase71`: index `5316049dbaf8`,
+    linux/amd64 `bff62074095f`. Its 26 html files and both nginx configs
+    equal the running frontend.
+- **Build (serial):**
+  - **API:** index `632ebb649d79`, linux/amd64 `d73d6ea9d814`. All 104
+    `/app` files equal `7a02a4f`, and the model is phase 7.1. Versus
+    rollback only `contracts.py`, `service.py` and `tests/test_waivers.py`
+    differ; `pip freeze` is unchanged.
+  - **Frontend:** index `38282253da1d`, linux/amd64 `6fcddd5f77a3`. Its 25
+    build files equal the validated production-env build, `50x.html` is
+    nginx's stock page, and both nginx configs equal rollback. The bundle
+    expects exactly `waiver-decision-integrity-phase7.1`.
+- **Recreate:** `docker compose up -d --no-deps api frontend` ran
+  21:46:03–21:46:32 UTC; health returned 200 at 21:46:41.
+  - api `687d0c98b3d0` and frontend `7906f01c3502`, 0 restarts.
+  - db `c41db6714843` and caddy `08198174d855` were not recreated.
+  - Clean startup with no migration. Five connection-refused lines fall in
+    the boot window. nginx resolves `api` at the same IP (172.21.0.3), so no
+    reload was needed.
+- **Rollback, if ever needed:** retag both `pre-phase71` images as `latest`,
+  then `docker compose up -d --no-deps api frontend`. No database rollback is
+  needed.
+
+### Acceptance (GET only, through Caddy with TLS validated)
+
+- **Captures:** live Phase 7 before the deploy and Phase 7.1 after it, on the
+  same snapshot, 97 GETs each, all 200. Each covers health, refresh status, 4
+  boards, 4 best-moves, all 16 roster drops × 4 horizons and 22 exact pairs.
+  Every waiver response reported its model (phase 7, then phase 7.1).
+- **Global BEST MOVES unchanged:** the best-moves payloads are equal path for
+  path apart from request-time stamps (`generated_at`, `model_version`,
+  `data_quality.overall_score.as_of`). The no-drop boards differ only by the
+  new `drop_summary: null`.
+
+| Horizon | Best move | Net (raw = reconciled) | Verdict and intent | Supported moves |
+|---|---|---|---|---|
+| Rest of Week | DeMar DeRozan / Kris Dunn | +0.589356 | SUPPORTED ADD, STREAM | 28 |
+| Next 7 Days | Keldon Johnson / Jarrett Allen | +0.565944 | SUPPORTED ADD, STREAM | 44 |
+| Next 14 Days | Keldon Johnson / Jarrett Allen | +0.567050 | SUPPORTED ADD, TWO-WEEK STREAM | 14 |
+| Rest of Season Outlook | Isaiah Jackson / Kevin Huerter | +0.412447 | SUPPORTED ADD, LONGER-TERM ADD | 6 |
+
+- **64 drop × horizon views: 0 violations** (21 checks each):
+  - 0 views where a DO NOT ADD pair is the answer, and 0 where WATCH
+    outranks a supported replacement;
+  - every best valid replacement is SUPPORTED ADD and equals
+    `best_add_for_team_id`; the summary decision equals the roster label;
+  - 0 INSUFFICIENT EVIDENCE results; the raw block appears exactly when the
+    raw leader outranks the answer and equals its card;
+  - every card, verdict and `top_measured_candidate_id` is unchanged.
+- **Before → after:** Phase 7 INSUFFICIENT EVIDENCE 25, HOLD 20, ADD 7,
+  STREAM 8, WATCH 4 → Phase 7.1 HOLD 33, CANNOT EVALUATE 12, ADD 7, STREAM 8,
+  WATCH 4. Exactly 25 views changed:
+  - the 13 refuted-leader views (Rest of Season 8, Next 14 Days 3, Next 7
+    Days 2) now read HOLD <drop>;
+  - the 3 injury-slot drops (Stephen Curry, Lauri Markkanen, RJ Barrett)
+    read CANNOT EVALUATE in all 4 horizons.
+- **Raw leader ≠ answer in 41 views:** 13 HOLD with a refuted positive DO
+  NOT ADD raw leader, 20 HOLD where every comparison is nonpositive, and 8
+  supported answers with a higher-raw WATCH.
+- **Jarrett Allen (Rest of Season):** the answer is **HOLD Jarrett Allen**.
+  Isaiah Jackson appears only as the HIGHEST RAW MODEL COMPARISON: DO NOT
+  ADD, raw +1.025611, reconciled −0.387882, with the gate arithmetic (66 ×
+  22.6 = 1490.9 vs 63 × 30.3 = 1908.3 Yahoo points).
+- **Exact pairs (22, every answer category in every horizon):** card =
+  impact, drop fixed, summary = impact; best move = board = replacements =
+  impact.
+- **Desktop page** (1440 × 1000, one worker, serial): 1 live test passed in
+  6.0 min.
+  - Covered: every section and horizon; HOLD, BEST VALID REPLACEMENT, WATCH
+    and CANNOT EVALUATE answers; the subordinate raw block ("not a
+    recommendation", dashed, below the answer) with raw and reconciled net
+    and the reason.
+  - Analyze opened the exact raw pair (Jackson/Allen) and the exact valid
+    pair (DeRozan/Dunn).
+  - Keyboard focus returned for 3 dialogs; axe: 0 violations in 15 states;
+    page width 1440 everywhere; 23 requests, all GET.
+  - The first attempt failed on host capacity, not the product. Chromium's
+    start pushed the API back into swap, the page's board read took 44.5 s,
+    and its queued best-moves read hit nginx's 60 s (504; the API cancelled
+    it). The retry, after pressure settled, passed. No timeout changed.
+- **Database:** identical at 20:58, 21:19, 21:45 and 22:21 UTC (inventory,
+  rows, newest timestamps, 6 migrations, every write counter, the
+  `yahoo_credentials` canary).
+- **Logs since 20:40 UTC:** nginx 2,740 requests, 0 non-GET; the API logged
+  211 request timings, all GET; 0 refresh jobs; 0 Yahoo, NBA, Fantrax,
+  OAuth or transaction activity.
+- **Admission** (unchanged; one slot): 116 deployed reads with 0
+  overlapping executions; 8 queued reads each waited for the preceding read;
+  the abandoned read was cancelled at disconnect (`status=499`).
+
+# Phase 7.1 Compare-a-Drop Gate Fix — Implemented and Validated Locally — 2026-11-21 (deployed later that day; see above)
+
+**Historical record.** At the time of this section production still ran
+Phase 7 (below), and the Phase 7.1 fix (model
+`waiver-decision-integrity-phase7.1`) was in the working tree on top of
+`a9a0367`, neither committed nor deployed. Full evidence:
+`qa-work/2026-11-21-phase71-fix/phase71-report.md` (local, untracked).
 
 - **Root cause:** for an explicit drop, `build_board` named the raw-net leader
   "Top measured option" and derived the result from it. A pair refuted by the
@@ -40,10 +244,11 @@ authorization. Full evidence: `qa-work/2026-11-21-phase71-fix/phase71-report.md`
     Jackson stays visible as raw +1.025611, reconciled −0.387882, DO NOT ADD,
     with the gate arithmetic.
 
-# CURRENT STATE — Phase 7 Waiver Decision Integrity — Deployed and Verified — 2026-11-21
+# Phase 7 Waiver Decision Integrity — Deployed and Verified — 2026-11-21 (superseded by Phase 7.1 at 21:46 UTC; see above)
 
-**STATUS: DEPLOYED AND VERIFIED (2026-11-21 16:36 UTC; 08:36 PST).** Model
-`waiver-decision-integrity-phase7` is in production. It was deployed from
+**STATUS: DEPLOYED AND VERIFIED (2026-11-21 16:36 UTC; 08:36 PST); replaced
+by Phase 7.1 at 21:46 UTC.** Model `waiver-decision-integrity-phase7` was in
+production from 16:36 to 21:46 UTC. It was deployed from
 commit `a9a0367` ("feat: enforce waiver decision integrity"; not pushed).
 
 - Only `api` and `frontend` were recreated.
@@ -158,7 +363,7 @@ Season).
 - **Payloads:** board +27–31% (about 1.9 MB), transactions +25–27%. No
   slowdown: 22 serial reads took 141 s, vs 166 s on Phase 6.
 
-### Residual defect found in acceptance (fixed locally in Phase 7.1; not deployed)
+### Residual defect found in acceptance (fixed by Phase 7.1, deployed 21:46 UTC)
 
 Compare a Specific Drop's "Top measured option" and result line use the raw
 net, not the Phase-7 gate. In 13 of 64 drop × horizon views, the line names
@@ -172,8 +377,10 @@ Example: drop Jarrett Allen in Rest of Season reads "Top measured option:
 Isaiah Jackson · model-ranked, limited evidence", while its cards say DO NOT
 ADD.
 
-No recommendation surface is affected. Phase 7.1 (above) fixes it locally;
-deploying it needs authorization (see [next actions](next-actions.md)).
+No recommendation surface was affected. Phase 7.1 (above) fixed it and was
+deployed and verified at 21:46 UTC: these 13 views now read "HOLD <drop>",
+with the refuted pair shown only as the subordinate highest raw model
+comparison.
 
 # Waiver Decision-Integrity Audit — Implemented and Validated Locally — 2026-11-21 (deployed later that day; see above)
 

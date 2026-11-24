@@ -15,6 +15,7 @@ import type {
   FormWindow,
   FreshnessItem,
   MeasuredProduction,
+  ProductionBucket,
   MoveIntent,
   OptionForm,
   OptionPair,
@@ -37,7 +38,7 @@ import type {
   WaiverSampleLabel,
 } from "./waiverTypes";
 
-const CURRENT_WAIVER_MODEL_VERSION = "waiver-decision-integrity-phase7.1";
+const CURRENT_WAIVER_MODEL_VERSION = "waiver-season-blend-phase8";
 // Only these Yahoo availability classes may back a supported move or a featured recommendation.
 const ACTIONABLE_AVAILABILITY = new Set<AvailabilityClass>([
   "CONFIRMED_FA", "CONFIRMED_WAIVER", "UNROSTERED_FROM_COMPLETE_ROSTER_SNAPSHOT",
@@ -430,23 +431,44 @@ function tinySample(games: number | null | undefined): string | null {
   return games === 1 || games === 2 ? `${games}-GAME SAMPLE — WATCH ONLY` : null;
 }
 
+/** The backend's basis line for the model production value (this season's games, the prior season's share). */
 function measuredBasisLabel(measured: MeasuredProduction): string {
-  if (measured.value == null) return "Unavailable";
-  const blended = measured.prior_value != null && measured.current_weight != null && measured.current_weight < 1;
-  return blended ? "Blended with previous season" : measured.basis === "RECENT" ? "Recent only" : "Current season only";
+  return measured.value == null ? "Unavailable" : measured.label || "Model production value";
 }
 
-/** The exact measured-value math, e.g. 1 game at 3.2 weighted 1/11 plus a 2025-26 baseline weighted 10/11. */
+/** The backend's exact arithmetic for the model production value; no weight is computed here. */
 function measuredMath(measured: MeasuredProduction): string {
   if (measured.value == null) return measured.detail || "Production unavailable.";
-  const games = measured.current_games;
-  const window = measured.basis === "RECENT" ? "last-14-days" : "current-season";
-  const current = measured.current_value == null ? "?" : measured.current_value.toFixed(1);
-  if (measured.prior_value != null && measured.current_weight != null && measured.current_weight < 1) {
-    const share = Math.round((1 - measured.current_weight) * 100);
-    return `${games} ${window} game${games === 1 ? "" : "s"} at ${current} FP/G (weight ${games}/${games + 10}) + ${measured.prior_season ?? "previous-season"} baseline ${measured.prior_value.toFixed(1)} FP/G (weight 10/${games + 10}) = ${measured.value.toFixed(1)} FP/G${share > 50 ? `: ${share}% previous-season evidence, not current form` : ""}.`;
+  return measured.math ? `${measured.math} Yahoo FP/G.` : `${measured.value.toFixed(1)} Yahoo FP/G.`;
+}
+
+function gameSpan(bucket: ProductionBucket): string {
+  if (!bucket.first_game || !bucket.last_game) return "";
+  return bucket.first_game === bucket.last_game ? `, ${bucket.first_game}` : `, ${bucket.first_game} to ${bucket.last_game}`;
+}
+
+/** "Recent current season (last 14 days): 7 games at 16.5 FP/G, … · 47%": one line per bucket, backend numbers only. */
+function bucketText(bucket: ProductionBucket): string {
+  const share = `${Math.round(bucket.share * 100)}%`;
+  const games = `${bucket.games} game${bucket.games === 1 ? "" : "s"}`;
+  if (bucket.key === "PRIOR") {
+    const name = `Prior season${bucket.season ? ` ${bucket.season}` : ""}`;
+    return bucket.share > 0 && bucket.value != null
+      ? `${name}: ${games} at ${bucket.value.toFixed(1)} FP/G, counted as ${bucket.weight_games} games · ${share}`
+      : `${name}: not used (no supported prior-season history)`;
   }
-  return `${measured.value.toFixed(1)} FP/G from ${games} ${window} game${games === 1 ? "" : "s"}; no blending.`;
+  return bucket.games && bucket.value != null
+    ? `${bucket.label}: ${games} at ${bucket.value.toFixed(1)} FP/G${gameSpan(bucket)} · ${share}`
+    : `${bucket.label}: no games`;
+}
+
+/** Every bucket behind a production value: each current-season game counts once; the prior season counts as a fixed
+ * number of games. */
+export function ProductionBuckets({ buckets }: { buckets: ProductionBucket[] | null | undefined }) {
+  if (!buckets?.length) return null;
+  return <ul className="waiver-buckets" aria-label="Production basis: each game counted once">
+    {buckets.map((bucket) => <li key={bucket.key}>{bucketText(bucket)}</li>)}
+  </ul>;
 }
 
 // Decision horizons look forward; form windows (Last 7 / 14 / 30 Days) look back. They are never interchangeable.
@@ -513,7 +535,8 @@ function ProductionBlock({ option }: { option: DecisionOption }) {
     <div><dt>MODEL VALUE USED</dt><dd>{pair?.add_ppg != null
       ? <>{pair.add_ppg.toFixed(1)} Yahoo FP/G in the exact comparison <small>{pair.basis_label}</small></>
       : <>{measuredBasisLabel(option.measured)}: {measuredMath(option.measured)}</>}</dd></div>
-    {pair?.add_ppg != null && <div><dt>MEASURED FOR RANKING</dt><dd>{measuredBasisLabel(option.measured)}: {measuredMath(option.measured)}</dd></div>}
+    {option.measured.value != null && <div><dt>MODEL PRODUCTION VALUE</dt><dd>{option.measured.value.toFixed(1)} Yahoo FP/G · {measuredBasisLabel(option.measured)}<small>Based on: {measuredMath(option.measured)}</small>
+      <ProductionBuckets buckets={option.measured.buckets} /></dd></div>}
   </dl>;
 }
 
@@ -544,8 +567,10 @@ function ExplanationDetails({ explanation }: { explanation: PairExplanation }) {
     <ContributionTable explanation={explanation} />
     <h5>Production values used (same basis for both players)</h5>
     <ul>
-      <li><strong>{explanation.add_name}:</strong> {explanation.add_production.value == null ? "Unavailable" : `${explanation.add_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.add_production.label}{explanation.add_production.math ? ` · ${explanation.add_production.math}` : ""}{explanation.add_production.percentile != null ? ` · production percentile ${explanation.add_production.percentile.toFixed(1)}` : ""}</li>
-      {explanation.drop_production && <li><strong>{explanation.drop_name}:</strong> {explanation.drop_production.value == null ? "Unavailable" : `${explanation.drop_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.drop_production.label}{explanation.drop_production.math ? ` · ${explanation.drop_production.math}` : ""}{explanation.drop_production.percentile != null ? ` · production percentile ${explanation.drop_production.percentile.toFixed(1)}` : ""}</li>}
+      <li><strong>{explanation.add_name}:</strong> {explanation.add_production.value == null ? "Unavailable" : `${explanation.add_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.add_production.label}{explanation.add_production.math ? ` · ${explanation.add_production.math}` : ""}{explanation.add_production.percentile != null ? ` · production percentile ${explanation.add_production.percentile.toFixed(1)}` : ""}
+        <ProductionBuckets buckets={explanation.add_production.buckets} /></li>
+      {explanation.drop_production && <li><strong>{explanation.drop_name}:</strong> {explanation.drop_production.value == null ? "Unavailable" : `${explanation.drop_production.value.toFixed(2)} Yahoo FP/G`} · {explanation.drop_production.label}{explanation.drop_production.math ? ` · ${explanation.drop_production.math}` : ""}{explanation.drop_production.percentile != null ? ` · production percentile ${explanation.drop_production.percentile.toFixed(1)}` : ""}
+        <ProductionBuckets buckets={explanation.drop_production.buckets} /></li>}
     </ul>
     <p><strong>Schedule in {explanation.horizon}</strong> ({explanation.window_start ?? "?"} to {explanation.window_end ?? "?"}, persisted schedule rows):{" "}
       {explanation.add_name} {explanation.add_games ?? "unknown"} games{explanation.drop_name ? ` · ${explanation.drop_name} ${explanation.drop_games ?? "unknown"} games` : ""}.
@@ -655,7 +680,7 @@ export function FormPanel({ candidate }: { candidate: WaiverCandidate }) {
 }
 
 function measuredPpg(option: DecisionOption): string {
-  return option.measured.value == null ? "Production unavailable" : `${option.measured.value.toFixed(1)} Yahoo fantasy PPG`;
+  return option.measured.value == null ? "Production unavailable" : `${option.measured.value.toFixed(1)} Yahoo FP/G model value`;
 }
 
 function gamesText(option: DecisionOption, mode: WaiverMode): string {
@@ -1024,7 +1049,7 @@ export function OtherGoodOptions({ board, analysis, onDetails, onAnalyzePair }: 
     <p className="waiver-window-note">Measurable players worth monitoring, each with its own verdict. These are not add recommendations.</p>
     {watch.length
       ? <ul className="waiver-option-list">{watch.map((option) => <li key={option.player_id}><OptionCard option={option} mode={board.mode} fullRoster={fullRoster} onDetails={onDetails} /></li>)}</ul>
-      : <p>No additional WATCH players: nobody else out-produces your lowest-producing roster player{support.roster_floor_ppg != null ? ` (${support.roster_floor_ppg.toFixed(1)} measured fantasy PPG)` : ""}.</p>}
+      : <p>No additional WATCH players: nobody else out-produces your lowest-producing roster player{support.roster_floor_ppg != null ? ` (${support.roster_floor_ppg.toFixed(1)} Yahoo FP/G model production value)` : ""}.</p>}
     {swaps.length > 0 && <><h4>Measured swaps to watch</h4><WatchSwapList analysis={analysis as TransactionAnalysis} onAnalyze={onAnalyzePair} /></>}
     {unverified && <section className="waiver-potential" aria-labelledby="waiver-potential-title">
       <h3 id="waiver-potential-title">POTENTIAL TARGETS TO CHECK IN YAHOO</h3>
@@ -1333,7 +1358,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
           </label>
           <label className="waiver-filter">Sort by
             <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
-              <option value="decision">Decision priority (backend)</option><option value="ppg">Measured fantasy PPG</option>
+              <option value="decision">Decision priority (backend)</option><option value="ppg">Model production value</option>
               <option value="last7">Last 7 Days FP/G</option><option value="last14">Last 14 Days FP/G</option>
               <option value="last30">Last 30 Days FP/G</option><option value="season">Season FP/G</option>
               <option value="next7">Next 7 Days games</option><option value="next14">Next 14 Days games</option>
@@ -1345,7 +1370,7 @@ export function FullWaiverList({ board, onDetails }: { board: WaiverBoard; onDet
           <div className="waiver-table-scroll" role="region" aria-label="Waiver list, scroll horizontally for all columns" tabIndex={0}>
             <table className="waiver-table">
               <caption>Backend-ranked players. Details open evidence only; no Yahoo transaction is executed.</caption>
-              <thead><tr>{["Rank", "Player", "Pos", "Availability", "Yahoo status", "Verdict", "Fills need", "Measured fantasy PPG", "Form FP/G (Last 7 · 14 · 30 · Season)", "Games", "Next 7 / 14", "Current-season sample", "Details"].map((column) =>
+              <thead><tr>{["Rank", "Player", "Pos", "Availability", "Yahoo status", "Verdict", "Fills need", "Model production value (Yahoo FP/G)", "Form FP/G (Last 7 · 14 · 30 · Season)", "Games", "Next 7 / 14", "Current-season sample", "Details"].map((column) =>
                 <th key={column} scope="col">{column}</th>)}</tr></thead>
               <tbody>{rows.map((option) => <tr key={option.player_id}>
                 <td>{option.decision_rank}</td>
@@ -1543,7 +1568,8 @@ function useModalDialog() {
 function DecisionOptionSummary({ option }: { option: DecisionOption }) {
   return <section className="waiver-option-detail" aria-label={`Decision support for ${option.player_name}`}>
     <p className="waiver-action-label"><ClassBadge option={option} /> <AvailabilityBadge option={option} /> <span>{option.reason}</span></p>
-    <p><strong>Measured production:</strong> {option.measured.detail}</p>
+    <p><strong>Model production value:</strong> {option.measured.detail}</p>
+    <ProductionBuckets buckets={option.measured.buckets} />
     <p><strong>Yahoo status:</strong> {option.status_label}. {option.status_detail}</p>
     {option.blockers.length > 0 && <><h3>Why this is not a supported add</h3><ul>{option.blockers.map((item) => <li key={item}>{item}</li>)}</ul></>}
     {option.confirm.length > 0 && <><h3>Confirm in Yahoo</h3><ul>{option.confirm.map((item) => <li key={item}>{item}</li>)}</ul></>}
@@ -1587,7 +1613,7 @@ function WatchSwapList({ analysis, onAnalyze }: { analysis: TransactionAnalysis;
   return analysis.watch_transactions.length ? <ul>{analysis.watch_transactions.map((swap) =>
     <li key={`${swap.add_player.player_id}-${swap.drop_player.player_id}`}>
       WATCH: {swap.add_player.player_name} / drop {swap.drop_player.player_name}.
-      <p>Yahoo fantasy PPG: {number((analysis.mode === "ros" ? swap.add_player.ros : swap.add_player.recent).value)} · {swap.add_player.current_season_games} current-season games · {swap.add_player.schedule.games_remaining ?? "Unknown"} games in {modeWindow(analysis.mode)} · Yahoo status {yahooStatusText(swap.add_player)}.</p>
+      <p>Model production value: {number(swap.comparison.explanation?.add_production.value ?? null)} Yahoo FP/G{swap.comparison.explanation ? ` (${swap.comparison.explanation.add_production.label})` : ""} · {swap.add_player.current_season_games} current-season games · {swap.add_player.schedule.games_remaining ?? "Unknown"} games in {modeWindow(analysis.mode)} · Yahoo status {yahooStatusText(swap.add_player)}.</p>
       <FormLine form={swap.add_player.form} name="Add" />
       <p><strong>Why watch:</strong> {swap.comparison.explanation?.statement ?? "positive measured roster-index change with observed comparison evidence."}</p>
       {/* The backend names the exact gate, player and window that block this pair. */}

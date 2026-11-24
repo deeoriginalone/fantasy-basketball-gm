@@ -99,9 +99,22 @@ export interface OptionForm {
 }
 
 /** The per-game production a comparison actually used, with its provenance. */
+/** One non-overlapping evidence bucket behind a production value: each game counts in exactly one bucket. */
+export interface ProductionBucket {
+  key: "RECENT" | "EARLIER" | "CURRENT_SEASON" | "PRIOR";
+  label: string;
+  games: number;
+  weight_games: number;
+  value: number | null;
+  share: number;
+  season: string | null;
+  first_game: string | null;
+  last_game: string | null;
+}
+
 export interface ProductionBasis {
   value: number | null;
-  basis: "RECENT_BLENDED" | "RECENT_ONLY" | "SEASON_EVIDENCE" | "PREVIOUS_SEASON_FALLBACK" | "UNAVAILABLE";
+  basis: "CURRENT_SEASON_BLENDED" | "CURRENT_SEASON_ONLY" | "SEASON_EVIDENCE" | "PREVIOUS_SEASON_FALLBACK" | "UNAVAILABLE";
   label: string;
   percentile: number | null;
   window_value: number | null;
@@ -113,6 +126,7 @@ export interface ProductionBasis {
   prior_weight: number | null;
   current_season_value: number | null;
   current_season_games: number;
+  buckets: ProductionBucket[];
   math: string;
 }
 
@@ -362,6 +376,9 @@ export interface MeasuredProduction {
   state: QualityState;
   as_of: string | null;
   sample_label: WaiverSampleLabel;
+  buckets: ProductionBucket[];
+  label: string;
+  math: string;
   detail: string;
 }
 

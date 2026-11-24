@@ -69,9 +69,23 @@ The fix, model `waiver-decision-integrity-phase7`, adds:
 It is **deployed and verified** (2026-11-21 16:36 UTC, commit `a9a0367`,
 `api` and `frontend` only, no migration or data change). The live page now
 features **Isaiah Jackson / Kevin Huerter (+0.412)** in Rest of Season
-Outlook, and Jackson / Allen is DO NOT ADD everywhere. See the
+Outlook, and Jackson / Allen is DO NOT ADD everywhere. The follow-up Phase
+7.1 (`waiver-decision-integrity-phase7.1`, commit `7a02a4f`) is **deployed
+and verified** (2026-11-21 21:46 UTC): Compare a Specific Drop now answers
+from the same gate, so drop Jarrett Allen in Rest of Season reads HOLD
+Jarrett Allen. See the
 [current-state report](current-state.md) and the
 [2026-11-21 session record](../sessions/2026-11-21.md).
+
+On 2026-11-24 a read-only audit resolved the weekly production blend
+question. Phase 7.1's blend shrank only the last 14 days toward the prior
+season with ten games of weight. The prior therefore kept at least 55.6% of
+every weekly value all season, earlier current-season games never counted,
+and 11 SUPPORTED ADDs (including Rest of Week DeRozan / Dunn) ranked an add
+who trailed on both current views. Phase 8 (`waiver-season-blend-phase8`)
+counts every current-season game once beside the prior season counted as 2
+games. It is validated and committed; deployment is the next action. See the
+[2026-11-24 session record](../sessions/2026-11-24.md).
 
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
 `PTS + 1.2*REB + 1.5*AST + 3*BLK + 3*STL - TO` from persisted Yahoo settings.
@@ -84,15 +98,29 @@ historical, stat-based evidence behind it, never a projection.
 The Phase-5 deployment, the first refresh, the 2026-11-14 acceptance-fix
 patch, the Phase-6 deployment (2026-11-14 21:30 UTC), the Phase-6 ordering
 and wording cleanup deployment (2026-11-15 02:36 UTC) and the heavy-read
-admission deployment (2026-11-15 14:50 UTC) and the Phase-7
-decision-integrity deployment (2026-11-21 16:36 UTC) are complete (see the
+admission deployment (2026-11-15 14:50 UTC), the Phase-7
+decision-integrity deployment (2026-11-21 16:36 UTC) and the Phase-7.1
+Compare-a-Drop deployment (2026-11-21 21:46 UTC) are complete (see the
 [current-state report](current-state.md)); do not repeat them.
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Confirm in Yahoo before acting on a deployed recommendation.** The
+1. **Deploy Phase 8** (`waiver-season-blend-phase8`; authorized
+   2026-11-24). Procedure: GET-only production baseline, a new private
+   `pg_dump -Fc` backup, rollback tags `pre-phase8` for `api` and `frontend`
+   proven against the running containers, serial builds, then
+   `docker compose up -d --no-deps api frontend` only. No migration and no
+   refresh. Acceptance is GET-only against a read-only Phase-8 shadow on the
+   same persisted data and clock.
+   - The persisted Yahoo evidence is from the 2026-11-21 15:50 refresh and
+     is past its 24-hour rule. Live boards therefore withhold rankings and
+     pair decisions (INSUFFICIENT EVIDENCE) in Phase 7.1 and in Phase 8
+     until the user's next REFRESH WAIVER DATA. Weekly model production
+     values and their buckets still show. Never refresh as part of a deploy.
+2. **Confirm in Yahoo before acting on a deployed recommendation.** The
    user's REFRESH WAIVER DATA at 15:50–15:58 UTC on 2026-11-21 (job
-   `043e463ebb71`) saved the current snapshot. The live Phase-7 page shows:
+   `043e463ebb71`) saved the current snapshot. While that evidence was
+   fresh, the live page (Phase 7.1) showed:
    - Rest of Week: ADD DeMar DeRozan / DROP Kris Dunn (+0.589), flagged
      PRIOR-SEASON DRIVEN and drop-permanent.
    - Next 7 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.566). The
@@ -102,62 +130,53 @@ may run as a side effect of review or documentation work.
      **FRAGILE** (+2.4 FP, less than one game).
    - Rest of Season Outlook: ADD Isaiah Jackson / DROP Kevin Huerter
      (+0.412). Jackson / Allen is DO NOT ADD.
+   - Compare a Specific Drop: DROP Jarrett Allen in Rest of Season reads
+     HOLD Jarrett Allen; Isaiah Jackson appears only as the highest raw
+     model comparison (DO NOT ADD, raw +1.03, reconciled −0.39).
 
    These are hypothetical analysis. Check FA/waiver state, locks, status and
    remaining weekly adds in Yahoo; the app never executes a move. Earlier
    answers (the Phase-6 Jackson / Allen pair and the 2026-11-14/15 pairs)
-   are historical.
-2. **Authorize (or not) committing and deploying Phase 7.1**, the Compare
-   a Specific Drop gate fix. It is implemented and validated locally, NOT
-   committed and NOT deployed.
-   - **Problem (deployed Phase 7):** `build_board` picks `top_measured` by raw
-     net and derives `selected_player_result` from it. In 13 of 64 drop ×
-     horizon views (Rest of Season 8, Next 14 Days 3, Next 7 Days 2), the
-     header names a refuted pair "Top measured option" and reads INSUFFICIENT
-     EVIDENCE instead of "HOLD <drop>". For example, drop Jarrett Allen in
-     Rest of Season names Isaiah Jackson while the cards say DO NOT ADD.
-   - **Local fix (model `waiver-decision-integrity-phase7.1`):** a backend
-     `drop_summary` from the cards' gated decisions, matching the roster
-     label:
-     - the answer is BEST VALID REPLACEMENT, WATCH, HOLD <drop> or CANNOT
-       EVALUATE;
-     - the raw leader appears only as a subordinate "HIGHEST RAW MODEL
-       COMPARISON", with its gate reason and an exact-pair Analyze.
-     - Nothing else changes.
-   - **Validated:**
-     - Backend 328 / 492; frontend unit 76/76, `tsc -b` and build; desktop
-       Playwright 24/24.
-     - Read-only shadow of all 64 views: 0 invariant violations; best moves
-       and no-drop boards unchanged.
-     - Evidence: `qa-work/2026-11-21-phase71-fix/phase71-report.md`.
-   - **Deploy (only after authorization), same procedure as Phase 7:**
-     1. Check memory and IO pressure.
-     2. Make one commit of the 8 code files (qa-work stays untracked); run
-        gitleaks and `git diff --check`.
-     3. Back up the database and tag the running images `pre-phase71`.
-     4. Build `api`, then `frontend`, serially.
-     5. Run `docker compose up -d --no-deps api frontend`. Recreate both
-        together: the version bump makes a mixed pair fail closed.
-     6. Run GET-only acceptance of the 64 answers and confirm best moves
-        are unchanged.
-
-     **Rollback:** retag `pre-phase71` as latest and recreate `api` and
-     `frontend`. No database rollback is needed.
-3. **Watch the deployed heavy-read admission.** It has been live since
-   2026-11-15 14:50 UTC (api `bdf329394c93`).
+   are historical. Phase 8 changes the weekly answers on this snapshot
+   (read-only shadow at its fresh instant): Rest of Week Tari Eason / Kevin
+   Huerter (+0.226), Next 7 and Next 14 Days Derrick Jones Jr. / Jarrett
+   Allen (+0.656 / +0.657), Rest of Season unchanged, and DeRozan / Dunn
+   DO NOT ADD (−0.42).
+3. **Phase 7.1 is deployed and verified** (2026-11-21 21:46 UTC, commit
+   `7a02a4f`, `api` and `frontend` only; rollback tags `pre-phase71`); do
+   not repeat it.
+   - Compare a Specific Drop answers come from the gated `drop_summary`:
+     BEST VALID REPLACEMENT, WATCH, HOLD <drop> or CANNOT EVALUATE. The raw
+     leader appears only as a subordinate "HIGHEST RAW MODEL COMPARISON —
+     not a recommendation", with its gate reason and an exact-pair Analyze.
+   - Production acceptance: 64 drop × horizon views with 0 violations;
+     global BEST MOVES unchanged; database unchanged; 0 refresh, provider
+     or non-GET requests. Evidence:
+     `qa-work/2026-11-21-phase71-deploy/deployment-acceptance.md`.
+   - **Rollback, only if ever needed:** retag both `pre-phase71` images as
+     `latest`, then `docker compose up -d --no-deps api frontend`. No
+     database rollback is needed.
+4. **Watch the deployed heavy-read admission.** It has been live since
+   2026-11-15 14:50 UTC; every API image since then carries it unchanged,
+   including the deployed Phase 7.1 api `687d0c98b3d0`.
    - A cancelled read logs `status=499` with a `queue` phase in
      `request_timing`.
-   - If it ever misbehaves, roll back by retagging
-     `fantasy-basketball-gm-api:pre-waiver-reliability` as `latest` and
-     recreating only `api`.
+   - If it ever misbehaves, do not retag
+     `fantasy-basketball-gm-api:pre-waiver-reliability`: that image predates
+     Phases 7 and 7.1, so it would revert them too and leave the 7.1
+     frontend failing closed on the model mismatch. Plan a targeted fix
+     instead.
    - It bounds abandoned and overlapping reads; it does not fix the host
-     (item 7).
-4. **Validate the Waiver Center on desktop only.** It is PC-only: use
+     (item 8).
+5. **Validate the Waiver Center on desktop only.** It is PC-only: use
    1440 × 1000, one Playwright project (`--project=desktop`) and one worker.
    Do not run mobile/390 px projects for waiver validation. Start the browser,
    let host pressure settle and warm the API with one internal read before
-   page tests. Never run heavy reads in parallel.
-5. **Review the tiered-sample observations** (decision only; nothing
+   page tests; then let I/O pressure settle again before loading the page.
+   On 2026-11-21 Chromium's start pushed the API back into swap, and a page
+   load right after a 122 s warm-up hit a 504 on its queued best-moves read.
+   Never run heavy reads in parallel.
+6. **Review the tiered-sample observations** (decision only; nothing
    changes without approval):
    - The 13% FP/G tolerance decides exactly one promotion, Kris Dunn
      (-9.5%), the Next 7 Days drop.
@@ -166,27 +185,29 @@ may run as a side effect of review or documentation work.
    - The tolerance is symmetric (it protects a hot drop and admits a hot
      add).
    - 0-2-game positive pairs still show as WATCH.
-6. **Review history shrinkage and two related method questions** with the
-   user (decisions only; phase 7 discloses them but changes no method):
-   - **Weekly blend** (WC-04): measured PPG leans on 2025-26. On 2026-11-21:
-     - DeRozan 24.89 = 0.412 × 16.54 (last 14 days) + 0.588 × 30.73
-       (2025-26);
-     - Dunn 19.26 = 0.375 × 16.92 + 0.625 × 20.66;
-     - so DeRozan "beats" Dunn while trailing him this season (17.7 vs 23.6
-       FP/G) and over the last 14 days.
+7. **Weekly production blend: RESOLVED (2026-11-24, Phase 8).** WC-04: the
+   Phase 7.1 weekly value leaned on 2025-26 (DeRozan 24.89 = 0.412 × 16.54
+   last 14 days + 0.588 × 30.73 prior, so he "beat" Dunn while trailing him
+   on both current views) and ignored earlier current-season games. Phase 8
+   counts every current-season game once beside the prior season counted as
+   2 games (`docs/sessions/2026-11-24.md`); deploying it is item 1.
 
-     The weekly blend ignores earlier current-season games. Phase 7 labels
-     the case PRIOR-SEASON DRIVEN.
-   - **Short-horizon drop permanence** (WC-18): a Next 7 or Next 14 stream
-     can permanently drop a much higher current-season producer (Jarrett
-     Allen 30.3 vs Keldon Johnson 20.2 FP/G). Phase 7 shows "Dropping is
-     permanent" on the card; whether such a stream should be supported is a
-     policy decision.
-   - **Schedule scale:** the schedule component is the percentile of an
-     integer game count, so 1–3 games can swing it by 40–87 points. The
-     phase-7 gate stops claims that fail in Yahoo points. Rescaling the
-     component is a method decision.
-7. **Host capacity.** The 7.3 GB shared host swaps under load; waiver reads
+   **Remaining method questions after Phase 8 is deployed** (decisions only;
+   nothing changes without approval):
+   1. **Short-horizon permanent-drop policy** (WC-18): a Next 7 or Next 14
+      stream can permanently drop a much higher current-season producer
+      (Jarrett Allen 30.3 vs Keldon Johnson 20.2 FP/G on 2026-11-21). The
+      card shows "Dropping is permanent"; whether such a stream should be
+      supported is a policy decision.
+   2. **Schedule component scaling:** the schedule component is the
+      percentile of an integer game count, so 1–3 games can swing it by
+      40–87 points. The Phase-7 gate stops claims that fail in Yahoo points.
+      Rescaling the component is a method decision.
+   3. **Optional re-validation of K = 2** once more current-season games
+      exist: K = 2 is observationally supported on the 2026-27 games so far
+      (the data cannot separate K = 1–4 for fantasy-relevant players), so
+      re-run the read-only backtest later in the season.
+8. **Host capacity.** The 7.3 GB shared host swaps under load; waiver reads
    then stall for minutes, nginx returns 504 at 60 s, and a new database
    connection can hit asyncpg's 60 s connect timeout (one 500 during the
    2026-11-14 patch acceptance). After an idle period the API itself is
@@ -208,8 +229,8 @@ may run as a side effect of review or documentation work.
      `api` container a no-swap memory limit. Do not raise proxy or connect
      timeouts to hide it. Bounding concurrent heavy waiver reads and stopping
      work for disconnected clients are deployed (2026-11-15 14:50 UTC, item
-     3); they bound the damage, but the host constraint itself remains.
-8. **Later refreshes** are user-initiated from `/waivers` when the panel
+     4); they bound the damage, but the host constraint itself remains.
+9. **Later refreshes** are user-initiated from `/waivers` when the panel
    reports stale sources (Yahoo after 24 hours, NBA after 7 days). Never call
    the individual import routes or refresh as a side effect. An API restart or
    deploy drops the in-memory refresh job record; the panel then reads "All

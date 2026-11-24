@@ -12,7 +12,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, literal, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -116,6 +116,7 @@ from app.features.waivers.explanation import (
     explain_comparison,
     signed,
 )
+from app.features.waivers.production import PRIOR_GAMES, season_blend
 from app.features.waivers.sample import (
     SAMPLE_POLICY,
     SAMPLE_TIER_LABELS,
@@ -521,6 +522,36 @@ def acquisition_context_for(league: League, team: Team | None, now: datetime, ru
 
 def numeric_stats(payload: dict[str, Any]) -> dict[str, float]:
     return {key: number for key, value in payload.items() if (number := _numeric(value)) is not None}
+
+
+@dataclass(frozen=True)
+class SeasonBucketTotals:
+    """A player's current-season games before the last 14 days: count, Yahoo FP/G (None when any game lacks a scoring
+    field as a JSON number: the bucket fails honestly, never zero-filled) and first/last game date."""
+    games: int = 0
+    value: float | None = None
+    first: date | None = None
+    last: date | None = None
+
+
+SEASON_BLEND_LABEL = (f"Season blend: every current-season game counts once (last 14 days and earlier this season) and "
+    f"the fresh prior season counts as {PRIOR_GAMES} games; historical, not a projection or calibrated confidence")
+
+
+def earlier_season_query(nba_ids: set[str], season: str, before: date, fields: dict[str, float]):
+    """Per player, the regular-season games of `season` before `before`: one aggregate row (games, complete games,
+    Yahoo points, first and last date) instead of every game's payload. A game is complete when every nonzero-weight
+    scoring field is a JSON number."""
+    weights = [(PlayerGameLog.stats_payload[field], weight) for field, weight in fields.items() if weight != 0]
+    complete = and_(*(func.jsonb_typeof(value) == "number" for value, _ in weights)) if weights else true()
+    points = sum((value.as_float() * weight for value, weight in weights), literal(0.0))
+    return select(
+        PlayerGameLog.nba_player_id, func.count(), func.count().filter(complete), func.sum(case((complete, points))),
+        func.min(PlayerGameLog.game_date), func.max(PlayerGameLog.game_date),
+    ).where(
+        PlayerGameLog.nba_player_id.in_(nba_ids), PlayerGameLog.season == season,
+        PlayerGameLog.season_type == "Regular Season", PlayerGameLog.game_date < before,
+    ).group_by(PlayerGameLog.nba_player_id)
 
 
 def log_average(logs: list[PlayerGameLog]) -> dict[str, float]:
@@ -2354,6 +2385,12 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
     if latest_log_game is not None and latest_log_game < today - timedelta(days=7):
         log_state = "stale"
     recent_start = today - timedelta(days=RECENT_LOOKBACK_DAYS)
+    # The EARLIER bucket of the weekly season blend: every current-season game before the last 14 days, once.
+    earlier_by_id = {
+        row[0]: SeasonBucketTotals(games=row[1], value=row[3] / row[1] if row[1] and row[2] == row[1] else None,
+            first=row[4], last=row[5])
+        for row in (await session.execute(earlier_season_query(nba_ids, season, recent_start, measure_fields))).all()
+    } if measure_fields is not None and nba_ids else {}
     teams = list((await session.scalars(select(NbaTeam))).all())
     abbreviations = {row.nba_team_id: row.abbreviation for row in teams}
     nba_players = list((await session.scalars(select(NbaPlayer))).all())
@@ -2556,22 +2593,33 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
             "roster_fit": quality["roster"],
             "acquisition_value": quality["acquisition_value"],
         }
-        ranking = RankingEvidence(label="Historical Season Evidence per-game value, not a projection" if mode == "ros" else "Recent per-game value; no supported independent prior-season history")
+        ranking = RankingEvidence(label="Historical Season Evidence per-game value, not a projection" if mode == "ros"
+            else SEASON_BLEND_LABEL)
+        earlier = earlier_by_id.get(identity.nba_player_id, SeasonBucketTotals()) if identity.nba_player_id else SeasonBucketTotals()
         if quality_fields["ros" if mode == "ros" else "recent"].state != "available":
             value_score = None
         else:
             value_score = value.value
             if mode != "ros":
-                ranking.recent_weight = 1.0
+                # Weekly value: every current-season game once (Last 14 Days + earlier this season) beside the fresh
+                # prior season counted as PRIOR_GAMES games (production.py). Eligibility still reads only the samples.
                 prior = prior_by_id.get(identity.nba_player_id)
                 prior_value = production(numeric_stats(prior.base_stats), fields) if prior else None
-                if prior is not None and prior_value is not None and recent.value is not None and freshness(prior.imported_at, now, 7) == "available":
-                    # Ten historical-equivalent games shrink small samples without forecasting.
-                    weight = recent.games / (recent.games + 10)
-                    value_score = weight * recent.value + (1 - weight) * prior_value
-                    ranking = RankingEvidence(recent_weight=weight, historical_value=prior_value,
-                        historical_games=prior.games_played, historical_season=prior.season,
-                        label="Descriptive blend: recent PPG weighted n/(n+10), independent prior-season PPG weighted 10/(n+10); not a projection or calibrated confidence")
+                used = prior is not None and prior_value is not None and freshness(prior.imported_at, now, 7) == "available"
+                blend = season_blend(recent_games=recent.games, recent_value=recent.value,
+                    earlier_games=earlier.games, earlier_value=earlier.value,
+                    prior_games=prior.games_played if used else 0, prior_value=prior_value if used else None,
+                    prior_season=prior.season if used else None, season=season,
+                    recent_first=min((row.game_date for row in recent_logs), default=None),
+                    recent_last=max((row.game_date for row in recent_logs), default=None),
+                    earlier_first=earlier.first, earlier_last=earlier.last)
+                value_score = blend.value
+                ranking = RankingEvidence(recent_weight=blend.buckets[0].share if blend.buckets else None,
+                    prior_weight=blend.prior_share if used and blend.value is not None else None,
+                    historical_value=prior_value if used else None, historical_games=prior.games_played if used else 0,
+                    historical_season=prior.season if used else None, buckets=blend.buckets,
+                    label=SEASON_BLEND_LABEL if blend.value is not None
+                    else f"Season production unavailable: {blend.reason}")
         ranking.value = value_score
         current_row = historical if historical is not None and historical.season == season else None
         prior_row = prior_by_id.get(identity.nba_player_id) if identity.nba_player_id else None
@@ -2586,6 +2634,8 @@ async def load_context(session: AsyncSession, league_key: str, team_key: str, mo
             prior_games=prior_row.games_played if prior_row else 0,
             prior_season=prior_row.season if prior_row else None,
             scoring_available=measure_fields is not None, now=now, today=today,
+            earlier_value=earlier.value, earlier_games=earlier.games, earlier_first=earlier.first,
+            earlier_last=earlier.last, recent_first=min((row.game_date for row in recent_logs), default=None),
         )
         players[pid] = Candidate(
             player_id=pid, yahoo_player_id=identity.yahoo_player_id, player_name=identity.player_name,

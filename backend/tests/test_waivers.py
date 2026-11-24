@@ -570,8 +570,12 @@ def test_two_game_production_uses_independent_history_with_visible_uncertainty(p
     star = next(row for row in result["candidates"] if row["player_name"] == "star")
     assert star["recent"]["games"] == 2
     assert star["recent"]["sample_label"] == "INSUFFICIENT FOR STRONG RECOMMENDATION"
-    assert star["ranking_value"]["recent_weight"] == pytest.approx(2/12)
-    assert star["ranking_value"]["value"] == pytest.approx(50 * 2/12 + 10 * 10/12)
+    # No earlier current-season games: two real games beside the prior season counted as two games.
+    assert star["ranking_value"]["recent_weight"] == pytest.approx(2 / 4)
+    assert star["ranking_value"]["prior_weight"] == pytest.approx(2 / 4)
+    assert star["ranking_value"]["value"] == pytest.approx((2 * 50 + 2 * 10) / 4)
+    earlier = next(row for row in star["ranking_value"]["buckets"] if row["key"] == "EARLIER")
+    assert (earlier["games"], earlier["value"], earlier["share"]) == (0, None, 0)
     assert star["ranking_value"]["historical_games"] == 60
     assert star["ranking_value"]["historical_value"] == 10
     assert "not a projection" in star["ranking_value"]["label"]
@@ -2726,7 +2730,8 @@ def measure(row, value=None, games=None, prior=None, mode="this_week", age_days=
         mode=mode, season="2026-27", recent_value=None, recent_games=0, recent_as_of=None, recent_latest_game=None,
         current_value=row.recent.value if value is None else value, current_games=games,
         current_as_of=NOW - timedelta(days=age_days), prior_value=prior, prior_games=60 if prior is not None else 0,
-        prior_season="2025-26" if prior is not None else None, scoring_available=True, now=NOW, today=NOW.date())
+        prior_season="2025-26" if prior is not None else None, scoring_available=True, now=NOW, today=NOW.date(),
+        earlier_value=row.recent.value if value is None else value, earlier_games=games)
     return row
 
 
@@ -2759,11 +2764,18 @@ def test_measured_production_shrinks_small_samples_labels_staleness_and_needs_cu
     common = dict(season="2026-27", recent_value=None, recent_games=0, recent_as_of=None, recent_latest_game=None,
         scoring_available=True, now=NOW, today=NOW.date())
     shrunk = measured_production(mode="this_week", current_value=40.0, current_games=2,
-        current_as_of=NOW - timedelta(days=10), prior_value=20.0, prior_games=70, prior_season="2025-26", **common)
+        current_as_of=NOW - timedelta(days=10), prior_value=20.0, prior_games=70, prior_season="2025-26",
+        earlier_value=40.0, earlier_games=2, **common)
     assert shrunk.basis == "CURRENT_SEASON" and shrunk.comparable and shrunk.state == "stale"
-    assert shrunk.value == pytest.approx(2 / 12 * 40 + 10 / 12 * 20, abs=0.01)
-    assert shrunk.current_weight == pytest.approx(2 / 12, abs=1e-4)
+    assert shrunk.value == pytest.approx((2 * 40 + 2 * 20) / 4, abs=0.01)
+    assert shrunk.current_weight == pytest.approx(2 / 4, abs=1e-4)
+    assert shrunk.math == "(2 x 40.00 earlier this season + 2 x 20.00 2025-26) / 4 = 30.00"
     assert "(stale)" in shrunk.detail and "not a projection" in shrunk.detail
+    # Rest of Season Outlook decision support keeps its season shrinkage (ten prior games); the math says so.
+    season_shrunk = measured_production(mode="ros", current_value=40.0, current_games=2, current_as_of=NOW,
+        prior_value=20.0, prior_games=70, prior_season="2025-26", **common)
+    assert season_shrunk.value == pytest.approx((2 * 40 + 10 * 20) / 12, abs=0.01)
+    assert season_shrunk.math == "(2 x 40.00 this season + 10 x 20.00 2025-26) / 12 = 23.33"
     rookie = measured_production(mode="ros", current_value=45.0, current_games=MIN_UNSHRUNK_GAMES - 1,
         current_as_of=NOW, prior_value=None, prior_games=0, prior_season=None, **common)
     assert rookie.value == 45.0 and not rookie.comparable and rookie.state == "available"
@@ -2773,8 +2785,11 @@ def test_measured_production_shrinks_small_samples_labels_staleness_and_needs_cu
     assert inactive.detail.startswith("No current-season NBA games")
     recent = measured_production(mode="next_7_days", season="2026-27", recent_value=30.0, recent_games=5,
         recent_as_of=NOW, recent_latest_game=NOW.date(), current_value=25.0, current_games=12, current_as_of=NOW,
-        prior_value=None, prior_games=0, prior_season=None, scoring_available=True, now=NOW, today=NOW.date())
-    assert (recent.basis, recent.value, recent.state, recent.comparable) == ("RECENT", 30.0, "available", True)
+        prior_value=None, prior_games=0, prior_season=None, scoring_available=True, now=NOW, today=NOW.date(),
+        earlier_value=150 / 7, earlier_games=7)
+    # Every current-season game counts once: 5 Last 14 Days games at 30 and 7 earlier games at 21.43 are this season's 25.
+    assert (recent.basis, recent.value, recent.state, recent.comparable) == ("RECENT", 25.0, "available", True)
+    assert (recent.current_games, recent.current_value, recent.current_weight) == (12, 25.0, 1.0)
     season = measured_production(mode="ros", season="2026-27", recent_value=30.0, recent_games=5, recent_as_of=NOW,
         recent_latest_game=NOW.date(), current_value=25.0, current_games=12, current_as_of=NOW,
         prior_value=None, prior_games=0, prior_season=None, scoring_available=True, now=NOW, today=NOW.date())
@@ -3477,33 +3492,55 @@ def test_a_net_below_the_display_precision_is_a_near_tie_never_a_supported_move(
     assert analyze_transactions(ctx).best_transaction is None
 
 
-def test_prior_season_driven_production_edge_is_flagged_with_the_blend_math():
-    add = integrity_player(11, "C", ppg=24.9, games=2, pct=95, schedule_pct=10, l14=16.5, season_ppg=17.7,
-        prior=30.7, weight=7 / 17)
-    ctx, drop = integrity_ctx(add, drop_ppg=19.3)
-    drop.ranking_value.recent_weight, drop.ranking_value.historical_value = .375, 20.7
-    drop.ranking_value.historical_season, drop.recent.value, drop.ros.value = "2025-26", 16.9, 23.6
+def blended_evidence(row, recent, earlier=(0, None), prior=None):
+    """Attach weekly ranking evidence built by the production function itself."""
+    from app.features.waivers.contracts import RankingEvidence
+    from app.features.waivers.production import season_blend
+    blend = season_blend(recent_games=recent[0], recent_value=recent[1], earlier_games=earlier[0],
+        earlier_value=earlier[1], prior_games=prior[0] if prior else 0, prior_value=prior[1] if prior else None,
+        prior_season="2025-26" if prior else None, season="2026-27")
+    row.ranking_value = RankingEvidence(value=blend.value, recent_weight=blend.buckets[0].share,
+        prior_weight=blend.prior_share if prior else None, historical_value=prior[1] if prior else None,
+        historical_games=prior[0] if prior else 0, historical_season="2025-26" if prior else None, buckets=blend.buckets)
+    row.recent = row.recent.model_copy(update={"value": recent[1], "games": recent[0], "season": "2026-27"})
+    return row
+
+
+def test_prior_season_driven_production_edge_stays_flagged_with_the_bucket_math():
+    # Two current games beside a strong prior season still outrank a 14-game current-season producer.
+    add = integrity_player(11, "C", ppg=26, games=2, pct=95, schedule_pct=10, l14=12, season_ppg=12)
+    blended_evidence(add, recent=(2, 12.0), prior=(70, 40.0))
+    ctx, drop = integrity_ctx(add, drop_ppg=14)
+    blended_evidence(drop, recent=(7, 14.0), earlier=(7, 14.0))
     pair = enrich(ctx, add, drop.player_id)
     explanation = pair.comparison.explanation
-    assert pair.verdict == "SUPPORTED_ADD" and explanation.prior_season_driven
-    assert explanation.add_production.basis == "RECENT_BLENDED"
-    assert explanation.add_production.math == ("0.412 (7/17) x 16.50 last 14 days (7 games) + 0.588 (10/17) x 30.70 "
-        "2025-26 (70 games) = 24.90")
-    assert explanation.primary_tradeoff.startswith("PRIOR-SEASON DRIVEN:")
-    assert "last 14 days 16.5 vs 16.9, this season 17.7 vs 23.6" in explanation.primary_tradeoff
-    assert any(text.startswith("Dropping is permanent:") for text in explanation.tradeoffs)
+    assert explanation.prior_season_driven and pair.verdict == "WATCH_ONLY", "a 2-game sample is never supported"
+    assert explanation.add_production.basis == "CURRENT_SEASON_BLENDED"
+    assert explanation.add_production.math == "(2 x 12.00 last 14 days + 2 x 40.00 2025-26) / 4 = 26.00"
+    assert explanation.drop_production.basis == "CURRENT_SEASON_ONLY"
+    assert explanation.drop_production.math == "(7 x 14.00 last 14 days + 7 x 14.00 earlier this season) / 14 = 14.00"
+    assert explanation.primary_tradeoff == (f"PRIOR-SEASON DRIVEN: {add.player_name}'s 26.0 is 50% 2025-26 (40.0); "
+        f"{drop.player_name}'s 14.0 has no prior-season component. On current-season evidence {add.player_name} "
+        "trails: last 14 days 12.0 vs 14.0, this season 12.0 vs 14.0 Yahoo FP/G.")
+    # The drop's prior can decide the order too: a weak prior that drags the drop below an add with no prior.
+    rookie = integrity_player(12, "C", ppg=13, games=2, pct=95, schedule_pct=10, l14=13, season_ppg=13)
+    blended_evidence(rookie, recent=(7, 13.0), earlier=(7, 13.0))
+    ctx, drop = integrity_ctx(rookie, drop_ppg=14)
+    blended_evidence(drop, recent=(1, 14.0), prior=(70, 4.0))
+    flagged = enrich(ctx, rookie, drop.player_id).comparison.explanation
+    assert flagged.prior_season_driven and flagged.primary_tradeoff.startswith("PRIOR-SEASON DRIVEN:")
+    assert f"{drop.player_name}'s 7.3 is 67% 2025-26 (4.0)" in flagged.primary_tradeoff
 
 
 def test_one_game_blend_shows_its_basis_and_weights():
     from app.features.waivers.explanation import production_basis
-    from app.features.waivers.contracts import RankingEvidence
     row = evidence_player(11, "PG", games=1)
-    row.recent = row.recent.model_copy(update={"value": 3.2, "games": 1, "season": "2026-27"})
-    row.ranking_value = RankingEvidence(value=1 / 11 * 3.2 + 10 / 11 * 16, recent_weight=1 / 11, historical_value=16,
-        historical_games=44, historical_season="2025-26")
+    blended_evidence(row, recent=(1, 3.2), prior=(44, 16.0))
     basis = production_basis(row, "this_week")
-    assert basis.math == "0.091 (1/11) x 3.20 last 14 days (1 game) + 0.909 (10/11) x 16.00 2025-26 (44 games) = 14.84"
-    assert basis.prior_weight == pytest.approx(10 / 11, abs=1e-4) and basis.label.endswith("mostly previous-season evidence")
+    assert basis.math == "(1 x 3.20 last 14 days + 2 x 16.00 2025-26) / 3 = 11.73"
+    assert basis.prior_weight == pytest.approx(2 / 3, abs=1e-4) and basis.label.endswith("mostly previous-season evidence")
+    assert [(bucket.key, bucket.games, bucket.weight_games) for bucket in basis.buckets] == [
+        ("RECENT", 1, 1), ("EARLIER", 0, 0), ("PRIOR", 44, 2)]
     sample = next(item for item in evidence_dimensions_for(row) if item.key == "PRODUCTION_SAMPLE")
     assert sample.state == "TOO_SMALL" and sample.text.startswith("1-GAME SAMPLE — WATCH ONLY")
 
@@ -3770,6 +3807,227 @@ def test_decision_modules_contain_no_player_specific_rules():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "app" / "features" / "waivers"
     names = ("Allen", "Dunn", "Jackson", "Keldon", "Dončić", "Doncic", "DeRozan", "Huerter")
-    for module in ("service.py", "explanation.py", "decision_support.py", "sample.py", "capacity.py", "contracts.py"):
+    for module in ("service.py", "explanation.py", "decision_support.py", "sample.py", "capacity.py", "contracts.py",
+            "production.py"):
         text = (root / module).read_text()
         assert not any(name in text for name in names), module
+
+
+# --- 2026-11-24 audit: weekly production blend (model waiver-season-blend-phase8) ---------------------------------------
+# Read-only audit of the persisted snapshot (qa-work/2026-11-24-weekly-blend-audit): the shipped weekly value shrank only
+# the Last 14 Days toward the prior season with ten games of weight, so the prior kept at least 55% of every weekly value
+# all season (the window never holds ten games) and earlier current-season games never counted; 11 SUPPORTED ADD pairs
+# ranked an add above a drop who led on both Last 14 Days and the current season. Every current-season game now counts
+# once, in exactly one bucket, and the prior season counts as PRIOR_GAMES games. Synthetic, name-neutral fixtures.
+
+def previous_season(season):
+    year = int(season[:4])
+    return f"{year - 1}-{str(year)[-2:]}"
+
+
+def reseed_season(f, name, *, recent, earlier, prior=None):
+    """Replace `name`'s persisted current-season games. `recent` / `earlier` are (days before today, Yahoo points)
+    tuples, one game each with its own game ID ({nba id}-r{i} / -e{i}): RECENT games fall inside the last 14 days and
+    EARLIER games before them, so every game belongs to exactly one bucket. The current-season row matches the logs.
+    `prior` = (games, points per game) adds the previous regular season."""
+    async def change():
+        async with SessionFactory() as session, session.begin():
+            identity = await session.get(PlayerIdentity, f.ids[name])
+            nba_id = identity.nba_player_id
+            logs = list((await session.scalars(select(PlayerGameLog).where(PlayerGameLog.nba_player_id == nba_id))).all())
+            season = logs[0].season
+            for row in logs:
+                await session.delete(row)
+            current = (await session.scalars(select(NbaPlayerSeasonStats).where(
+                NbaPlayerSeasonStats.nba_player_id == nba_id, NbaPlayerSeasonStats.season == season))).one()
+            games = [*recent, *earlier]
+            current.games_played = len(games)
+            current.base_stats = {"PTS": round(sum(points for _, points in games) / len(games), 1) if games else 0}
+            player = await session.get(NbaPlayer, nba_id)
+            other = next(row for row in (await session.scalars(select(NbaTeam).where(
+                NbaTeam.nba_team_id.like(f"{f.league.split('.')[1]}%")))).all() if row.nba_team_id != player.team_id)
+            today = datetime.now(timezone.utc).astimezone(WAIVER_TIMEZONE).date()
+            for prefix, rows in (("r", recent), ("e", earlier)):
+                for index, (days, points) in enumerate(rows):
+                    game_id, played = f"{nba_id}-{prefix}{index}", today - timedelta(days=days)
+                    session.add(NbaGame(game_id=game_id, season=season, game_date=played, home_team_id=player.team_id,
+                        away_team_id=other.nba_team_id, source_payload={}, imported_at=datetime.now(timezone.utc)))
+                    await session.flush()
+                    session.add(PlayerGameLog(nba_player_id=nba_id, game_id=game_id, season=season,
+                        season_type="Regular Season", game_date=played, stats_payload={"PTS": points, "MIN": 30},
+                        source_payload={}, imported_at=datetime.now(timezone.utc)))
+            if prior is not None:
+                await session.merge(NbaPlayerSeasonStats(nba_player_id=nba_id, season=previous_season(season),
+                    season_type="Regular Season", games_played=prior[0], games_started=prior[0],
+                    base_stats={"PTS": prior[1]}, advanced_stats={}, source_payload={},
+                    imported_at=datetime.now(timezone.utc)))
+        await engine.dispose()
+    asyncio.run(change())
+
+
+def test_weekly_value_counts_every_current_season_game_once_on_every_surface(persisted):
+    f = persisted
+    drop_status_field(f, "star", "center", "guard", "weak")
+    # Add (star): Last 14 Days 7 x 16, earlier 6 x 19, prior season 77 games at 30. Drop (weak): 7 x 17, 7 x 29.5, 82
+    # games at 20.5. The add trails on Last 14 Days (16 < 17) and this season (17.4 < 23.3); the old blend still put it
+    # ahead (24.24 vs 19.06) because the prior kept 59% of both values.
+    reseed_season(f, "star", recent=[(day, 16) for day in range(1, 8)], earlier=[(day, 19) for day in range(20, 26)],
+        prior=(77, 30))
+    reseed_season(f, "weak", recent=[(day, 17) for day in range(1, 8)], earlier=[(day, 29.5) for day in range(20, 27)],
+        prior=(82, 20.5))
+    # A clear upgrade on every view, so the optimizer reports a supported pair against the same drop.
+    reseed_season(f, "center", recent=[(day, 40) for day in range(1, 8)], earlier=[(day, 38) for day in range(20, 25)],
+        prior=(70, 35))
+    today = datetime.now(timezone.utc).astimezone(WAIVER_TIMEZONE).date()
+    result = board(f)
+    rows = {row["player_name"]: row for row in [*result["candidates"], *result["roster"]]}
+    star, weak, center = rows["star"], rows["weak"], rows["center"]
+    assert star["ranking_value"]["value"] == pytest.approx((7 * 16 + 6 * 19 + 2 * 30) / 15)
+    assert weak["ranking_value"]["value"] == pytest.approx((7 * 17 + 7 * 29.5 + 2 * 20.5) / 16)
+    assert center["ranking_value"]["value"] == pytest.approx((7 * 40 + 5 * 38 + 2 * 35) / 14)
+    assert star["ranking_value"]["value"] < weak["ranking_value"]["value"], "both current views favor the drop"
+    from app.features.waivers.production import PRIOR_GAMES
+    assert PRIOR_GAMES == 2
+    buckets = {row["key"]: row for row in star["ranking_value"]["buckets"]}
+    assert [row["key"] for row in star["ranking_value"]["buckets"]] == ["RECENT", "EARLIER", "PRIOR"]
+    assert [(buckets[key]["games"], buckets[key]["weight_games"]) for key in ("RECENT", "EARLIER", "PRIOR")] == [
+        (7, 7), (6, 6), (77, 2)]
+    assert [buckets[key]["value"] for key in ("RECENT", "EARLIER", "PRIOR")] == [16, 19, 30]
+    assert [buckets[key]["share"] for key in ("RECENT", "EARLIER", "PRIOR")] == pytest.approx([7 / 15, 6 / 15, 2 / 15],
+        abs=1e-4)
+    assert buckets["PRIOR"]["season"] == previous_season(buckets["RECENT"]["season"])
+    # Each game in exactly one bucket: RECENT is the Last 14 Days window, EARLIER ends before it; together they are the
+    # whole current season.
+    assert (buckets["RECENT"]["first_game"], buckets["RECENT"]["last_game"]) == (
+        (today - timedelta(days=7)).isoformat(), (today - timedelta(days=1)).isoformat())
+    assert (buckets["EARLIER"]["first_game"], buckets["EARLIER"]["last_game"]) == (
+        (today - timedelta(days=25)).isoformat(), (today - timedelta(days=20)).isoformat())
+    windows = {row["key"]: row for row in star["form"]["windows"]}
+    assert buckets["RECENT"]["games"] == windows["LAST_14_DAYS"]["games"] == star["recent"]["games"] == 7
+    assert buckets["RECENT"]["games"] + buckets["EARLIER"]["games"] == windows["CURRENT_SEASON"]["games"] == 13
+    assert star["sample"]["relevant_games"] == 7, "the eligibility sample is still the Last 14 Days"
+
+    impact = f.client.get(f"/api/v1/waivers/{f.ids['star']}/impact", params={"drop_player_id": f.ids["weak"]}).json()
+    explanation = impact["comparison"]["explanation"]
+    add_basis = explanation["add_production"]
+    assert add_basis["basis"] == "CURRENT_SEASON_BLENDED" and add_basis["buckets"] == star["ranking_value"]["buckets"]
+    assert add_basis["math"] == "(7 x 16.00 last 14 days + 6 x 19.00 earlier this season + 2 x 30.00 2025-26) / 15 = 19.07"
+    assert "weight" not in add_basis["math"] and "10/" not in add_basis["math"]
+    contributions = {row["component"]: row["weighted_contribution"] for row in explanation["contributions"]}
+    assert contributions["player_value"] < 0, "an established current season is not reversed by the old season"
+    assert not explanation["prior_season_driven"]
+    assert not any(text.startswith("PRIOR-SEASON DRIVEN") for text in explanation["tradeoffs"])
+    # One production basis on every surface: board, optimizer, replacements, impact and the decision-support details.
+    analysis = f.client.get("/api/v1/waivers/transactions").json()
+    best = analysis["best_transaction"]
+    assert (best["add_player"]["player_id"], best["drop_player"]["player_id"]) == (f.ids["center"], f.ids["weak"])
+    replacements = {row["player_id"]: row for row in board(f, drop_player_id=f.ids["weak"])["candidates"]}
+    center_impact = f.client.get(f"/api/v1/waivers/{f.ids['center']}/impact",
+        params={"drop_player_id": f.ids["weak"]}).json()
+    assert best["comparison"] == replacements[f.ids["center"]]["comparison"] == center_impact["comparison"]
+    assert best["add_player"]["ranking_value"] == center["ranking_value"] == center_impact["candidate"]["ranking_value"]
+    assert replacements[f.ids["star"]]["comparison"] == impact["comparison"]
+    assert replacements[f.ids["star"]]["ranking_value"] == impact["candidate"]["ranking_value"] == star["ranking_value"]
+    assert center_impact["comparison"]["explanation"]["drop_production"] == explanation["drop_production"]
+    options = {row["player_id"]: row for row in result["decision_support"]["options"]}
+    assert options[f.ids["star"]]["measured"]["value"] == round(star["ranking_value"]["value"], 2)
+    assert options[f.ids["star"]]["measured"]["buckets"] == star["ranking_value"]["buckets"]
+    assert options[f.ids["star"]]["measured"]["current_games"] == 13
+    # The weekly value does not depend on the horizon; only schedule does.
+    for mode in ("next_7_days", "next_14_days"):
+        other = next(row for row in board(f, mode=mode)["candidates"] if row["player_id"] == f.ids["star"])
+        assert other["ranking_value"] == star["ranking_value"]
+    f.no_yahoo.assert_not_called()
+
+
+def test_weekly_value_needs_current_games_and_never_lets_the_prior_stand_in(persisted):
+    f = persisted
+    # No game in the last 14 days: the weekly ranking stays unavailable (the eligibility rule is unchanged); decision
+    # support still describes the season, every earlier game counted once beside the prior.
+    reseed_season(f, "star", recent=[], earlier=[(day, 30) for day in range(16, 25)], prior=(70, 40))
+    result = board(f)
+    star = next(row for row in result["candidates"] if row["player_id"] == f.ids["star"])
+    assert star["ranking_value"]["value"] is None and star["components"]["player_value"] is None
+    option = next(row for row in result["decision_support"]["options"] if row["player_id"] == f.ids["star"])
+    measured = option["measured"]
+    assert measured["basis"] == "CURRENT_SEASON" and measured["current_games"] == 9
+    assert measured["value"] == pytest.approx((9 * 30 + 2 * 40) / 11, abs=0.01)
+    assert [(row["key"], row["games"]) for row in measured["buckets"]] == [("RECENT", 0), ("EARLIER", 9), ("PRIOR", 70)]
+    assert measured["buckets"][0]["value"] is None and measured["buckets"][0]["share"] == 0, "empty is never zero"
+    assert any("No persisted games in the last 14 days" in item for item in option["blockers"])
+    # No current-season game at all: the prior season alone never becomes a current value.
+    reseed_season(f, "star", recent=[], earlier=[], prior=(70, 40))
+    result = board(f)
+    star = next(row for row in result["candidates"] if row["player_id"] == f.ids["star"])
+    option = next(row for row in result["decision_support"]["options"] if row["player_id"] == f.ids["star"])
+    assert star["ranking_value"]["value"] is None and option["measured"]["value"] is None
+    assert option["measured"]["detail"].startswith("No current-season NBA games")
+    f.no_yahoo.assert_not_called()
+
+
+def test_season_blend_counts_each_game_once_and_the_prior_decays_with_every_game():
+    from app.features.waivers.production import PRIOR_GAMES, season_blend
+
+    def blend(recent=(0, None), earlier=(0, None), prior=(0, None)):
+        return season_blend(recent_games=recent[0], recent_value=recent[1], earlier_games=earlier[0],
+            earlier_value=earlier[1], prior_games=prior[0], prior_value=prior[1], prior_season="2025-26")
+
+    # Tiny current sample: the prior still stabilizes it (one 5-point game beside a 30-point season).
+    tiny = blend(recent=(1, 5.0), prior=(70, 30.0))
+    assert tiny.value == pytest.approx((5 + 2 * 30) / 3) and tiny.prior_share == pytest.approx(2 / 3)
+    # Growing current season: the prior's share falls with every game, and the value converges to this season.
+    shares, values = [], []
+    for games in range(1, 83):
+        row = blend(recent=(min(games, 7), 20.0), earlier=(max(games - 7, 0), 20.0 if games > 7 else None),
+            prior=(70, 40.0))
+        shares.append(row.prior_share)
+        values.append(row.value)
+        assert row.prior_share == pytest.approx(PRIOR_GAMES / (games + PRIOR_GAMES))
+    assert all(later < earlier for earlier, later in zip(shares, shares[1:]))
+    assert all(20 < later < earlier for earlier, later in zip(values, values[1:]))
+    # Recent breakout and slump move the value by exactly their own games, never a second time through the season mean.
+    steady = blend(earlier=(10, 20.0), prior=(70, 20.0))
+    breakout = blend(recent=(5, 40.0), earlier=(10, 20.0), prior=(70, 20.0))
+    slump = blend(recent=(5, 5.0), earlier=(10, 20.0), prior=(70, 20.0))
+    assert steady.value == pytest.approx(20)
+    assert breakout.value == pytest.approx((5 * 40 + 10 * 20 + 2 * 20) / 17)
+    assert slump.value == pytest.approx((5 * 5 + 10 * 20 + 2 * 20) / 17)
+    assert slump.value < steady.value < breakout.value
+    for row in (breakout, slump):
+        shares = {bucket.key: bucket.share for bucket in row.buckets}  # presentation-rounded to 4 decimals
+        assert shares["RECENT"] == pytest.approx(5 / 17, abs=1e-4) and shares["EARLIER"] == pytest.approx(10 / 17, abs=1e-4)
+        assert sum(shares.values()) == pytest.approx(1, abs=1e-3)
+        assert row.current_games == 15 and row.current_value == pytest.approx((5 * row.buckets[0].value + 200) / 15)
+    # Missing prior season: the current season alone, unchanged; missing earlier bucket: deterministic two-bucket mean.
+    rookie = blend(recent=(3, 25.0), earlier=(9, 15.0))
+    assert rookie.value == pytest.approx((3 * 25 + 9 * 15) / 12) and rookie.prior_share == 0
+    assert [bucket.key for bucket in rookie.buckets] == ["RECENT", "EARLIER", "PRIOR"]
+    assert rookie.buckets[2].games == 0 and rookie.buckets[2].value is None and rookie.buckets[2].share == 0
+    early = blend(recent=(2, 50.0), prior=(60, 10.0))
+    assert early.value == pytest.approx((2 * 50 + 2 * 10) / 4) == blend(recent=(2, 50.0), prior=(60, 10.0)).value
+    assert early.buckets[1].games == 0 and early.buckets[1].value is None and early.buckets[1].share == 0
+    # No current-season evidence: no value, whatever the prior; a bucket with games but no Yahoo value fails honestly.
+    assert blend(prior=(82, 45.0)).value is None
+    assert blend(recent=(4, 20.0), earlier=(3, None), prior=(70, 30.0)).value is None
+    assert blend(recent=(4, None), prior=(70, 30.0)).value is None
+
+
+def test_a_better_production_estimate_never_turns_a_small_recent_sample_into_a_supported_add():
+    from app.features.waivers.production import season_blend
+    from app.features.waivers.contracts import RankingEvidence
+    for recent_games in (1, 2, 3, 4):
+        add = integrity_player(11, "C", ppg=38, games=4, pct=99, schedule_pct=90)
+        blend = season_blend(recent_games=recent_games, recent_value=40.0, earlier_games=14, earlier_value=38.0,
+            prior_games=70, prior_value=36.0, prior_season="2025-26")
+        add.ranking_value = RankingEvidence(value=blend.value, recent_weight=blend.buckets[0].share,
+            prior_weight=blend.prior_share, historical_value=36.0, historical_games=70, historical_season="2025-26",
+            buckets=blend.buckets)
+        add.recent = add.recent.model_copy(update={"games": recent_games})
+        add.current_season_games = 14 + recent_games
+        add.sample = None
+        ctx, drop = integrity_ctx(add)
+        pair = enrich(ctx, add, drop.player_id)
+        assert pair.comparison.net_improvement > 0 and pair.comparison.explanation.consistent
+        assert pair.verdict == "WATCH_ONLY" and pair.recommended_action_type == "WATCH", recent_games
+        assert any(note.startswith("Sample gate: ") for note in pair.evidence_blockers)
+        assert analyze_transactions(ctx).best_transaction is None
