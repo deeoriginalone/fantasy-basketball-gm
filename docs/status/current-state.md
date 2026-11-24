@@ -1,14 +1,18 @@
-# CURRENT STATE — Phase 8 Weekly Production Season Blend — Validated and Committed, Deployment Pending — 2026-11-24
+# CURRENT STATE — Phase 8 Weekly Production Season Blend — Deployed and Verified — 2026-11-24
 
-**STATUS: VALIDATED LOCALLY AND COMMITTED FOR DEPLOYMENT; NOT YET DEPLOYED.**
-Model `waiver-season-blend-phase8` is the newest development state. Its
-source commit is "fix: use current-season evidence in waiver production
-blend". Production runs `waiver-decision-integrity-phase7.1` (next section)
-until a Phase 8 deployment record is added here. No migration.
+**STATUS: PHASE 8 DEPLOYED AND VERIFIED (2026-11-24 10:32 UTC; 02:32
+PST).** Model `waiver-season-blend-phase8` is in production. It was deployed
+from commit `d16607f` ("fix: use current-season evidence in waiver
+production blend"), which is pushed to `origin/main` together with this
+record.
 
-- Details: `docs/sessions/2026-11-24.md`. Full audit:
-  `qa-work/2026-11-24-weekly-blend-audit/weekly-blend-report.md` (local,
-  untracked).
+- Only `api` and `frontend` were recreated.
+- No migration, refresh, provider call, OAuth, Yahoo transaction or data
+  change came from this work. There is no permanent-drop policy, no schedule
+  change and no player-specific rule.
+- Details: `docs/sessions/2026-11-24.md`. Evidence (local, untracked):
+  `qa-work/2026-11-24-weekly-blend-audit/weekly-blend-report.md` (audit) and
+  `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md` (deployment).
 
 ### Method (weekly horizons only)
 
@@ -42,9 +46,12 @@ until a Phase 8 deployment record is added here. No migration.
   prior of about 2 games beat the 10-game blend on ordering, rank correlation
   and absolute error. K = 2 came from a rule fixed before the run.
 
-### Expected effect (read-only shadow, same snapshot, clock 2026-11-21T18:29:21Z)
+### Decisions on the 2026-11-21 snapshot at its fresh instant (read-only, clock 2026-11-21T18:29:21Z)
 
-| Horizon | Phase 7.1 | Phase 8 |
+The audit shadow and the deployed API image (`85efb1c1d659`, its own
+`/app`) give the same decisions: 0 differences over 18,560 exact pairs.
+
+| Horizon | Phase 7.1 | Phase 8 (deployed code) |
 |---|---|---|
 | Rest of Week | DeRozan / Dunn +0.589 (PRIOR-SEASON DRIVEN) | Tari Eason / Kevin Huerter +0.226 |
 | Next 7 Days | Keldon Johnson / Jarrett Allen +0.566 | Derrick Jones Jr. / Jarrett Allen +0.656 |
@@ -52,8 +59,8 @@ until a Phase 8 deployment record is added here. No migration.
 | Rest of Season Outlook | Isaiah Jackson / Kevin Huerter +0.412 | unchanged |
 
 DeRozan / Dunn becomes DO NOT ADD (19.44 vs 23.21 FP/G, net −0.42), and all
-11 SUPPORTED double reversals disappear. These are dated shadow results;
-production evaluates its own clock.
+11 SUPPORTED double reversals disappear. These are dated results; production
+evaluates its own clock (see Acceptance).
 
 ### Pre-commit validation (2026-11-24 09:23–09:31 UTC)
 
@@ -70,10 +77,134 @@ Backend on a disposable PostgreSQL on an internal-only network (source
 read-only, removed afterwards); frontend in the Playwright image with no
 network.
 
+### Deployment
+
+- **Commit** `d16607f` (09:32 UTC): 17 files (+1463/−304): 5 backend source,
+  1 backend test, 3 frontend source, 2 frontend tests and 6 docs (including
+  the previously uncommitted Phase 7.1 record). `git diff --check` clean;
+  gitleaks v8.24.3: no leaks; no `.env` value in added lines; `qa-work/`
+  untracked.
+- **Backup:** `~/fantasy-gm-pre-phase8-20261124T100322Z.dump`.
+  - `pg_dump -Fc`, 138,259,118 bytes, mode 0600, SHA-256 `3916bea5e00c…`.
+  - `pg_restore --list`: 29 TABLE and 29 TABLE DATA. The archive's table
+    inventory and COPY row counts equal production (29 tables, 79,433
+    rows). Nothing restored.
+- **Rollback tags:** tagged from the running containers' image IDs and
+  proven by content.
+  - `fantasy-basketball-gm-api:pre-phase8`: index `632ebb649d79`,
+    linux/amd64 `d73d6ea9d814`. Its 104 `/app` files and `pip freeze`
+    equal the running Phase 7.1 API (all 104 equal `7a02a4f`).
+  - `fantasy-basketball-gm-frontend:pre-phase8`: index `38282253da1d`,
+    linux/amd64 `6fcddd5f77a3`. Its 26 html files and both nginx configs
+    equal the running frontend.
+- **Build (serial):**
+  - **API:** index `85efb1c1d659`, linux/amd64 `bf1ac64d5258`. All 105
+    `/app` files equal `d16607f`, with model phase 8 and `PRIOR_GAMES = 2`.
+  - **Dependency refresh:** the Phase 7.1 pip layer was no longer cached,
+    so the build resolved `requirements.txt`'s ranges afresh on a refreshed
+    `python:3.12-slim` (Python 3.12.16 unchanged). It picked up fastapi
+    0.165.0 (was 0.162.6), pydantic 2.14.4, pydantic_core 2.50.5,
+    SQLAlchemy 2.1.9 and patch releases of numpy, certifi, PyYAML,
+    packaging, charset-normalizer and annotated-doc.
+  - **Dependency validation:** before deploying, the exact image passed
+    backend focused 9, waiver 332 and full 496 on its own `/app`. Its
+    read-only Phase 8 shadow equals the validated environment's on all 100
+    production payloads (0 differing paths).
+  - **Frontend:** index `4ae81de3fb79`, linux/amd64 `aee2e001547c`. Its 25
+    build files equal a production-env build of `d16607f` (`index-CTA7iDTo.js`,
+    `index-DbIdjbVL.css`). `50x.html`, both nginx configs and nginx 1.27.5
+    equal rollback. The bundle expects exactly `waiver-season-blend-phase8`.
+- **Recreate:** `docker compose up -d --no-deps api frontend` ran
+  10:31:53–10:32:31 UTC; health returned 200 at 10:32:37.
+  - api `9bff7d62f56c` and frontend `f73cdcb3d4e9`, 0 restarts.
+  - db `32ee446dd34c` and caddy `08198174d855` were not recreated. The db
+    container dates from 2026-11-22 05:25, when the host's watchtower
+    replaced it with a newer `postgres:16-alpine` image (data volume kept);
+    that was not deployment work.
+  - Clean startup with no migration. Five connection-refused lines fall in
+    the boot window. nginx resolves `api` at the same IP (172.21.0.3), so
+    no reload was needed.
+- **Rollback, if ever needed:** retag both `pre-phase8` images as `latest`,
+  then `docker compose up -d --no-deps api frontend`. No database rollback
+  is needed.
+
+### Acceptance (GET only, through Caddy with TLS validated)
+
+- **Clock and freshness:** the saved Yahoo settings, player pool and rosters
+  (2026-11-21 15:51–15:53) are past their 24-hour rule. Live boards
+  therefore return INSUFFICIENT EVIDENCE with no candidates in every
+  horizon, before and after the deploy. The weekly model production values
+  and their buckets still show. Live decisions return after the user's next
+  REFRESH WAIVER DATA; no refresh was run.
+- **Captures:** live Phase 7.1 before (09:34–09:42) and Phase 8 after
+  (10:33–10:41), 103 GETs each, all 200.
+  - Each covers health, refresh status, 4 boards, 4 best-moves, all 16
+    roster drops × 4 horizons and 28 exact pairs.
+  - Every waiver response reported its model (phase 7.1, then phase 8).
+- **Production = read-only shadow:**
+  - The live Phase 7.1 baseline equals a Phase 7.1 shadow of the same data,
+    and live Phase 8 equals the pre-deploy Phase 8 shadow, on all 100
+    payloads.
+  - The only differing path is the request stamp
+    `data_quality.overall_score.as_of`, so there are 0 unexplained
+    differences.
+
+| Horizon | Live before → after | Weekly model production values |
+|---|---|---|
+| Rest of Week | INSUFFICIENT EVIDENCE → same; 16 drops CANNOT EVALUATE → same | 253 changed; DeRozan 25.91 → 19.44, Dunn 18.67 → 23.21 |
+| Next 7 Days | same | same as Rest of Week |
+| Next 14 Days | same | same as Rest of Week |
+| Rest of Season Outlook | same | 270 unchanged |
+
+- **DeRozan and Dunn in production:**
+  - DeRozan 19.44 = (5 × 16.26 last 14 days + 8 × 18.61 earlier this season
+    + 2 × 30.73 2025-26) / 15 (13% prior);
+  - Dunn 23.21 = (5 × 14.70 + 9 × 28.51 + 2 × 20.66) / 16 (12% prior).
+
+  No +0.589 PRIOR-SEASON DRIVEN move remains. On the same snapshot at its
+  fresh instant, the deployed code makes the pair DO NOT ADD (−0.419815).
+- **14 rookies without a prior** became comparable POTENTIAL TARGETs: the
+  4-game minimum now counts every current-season game. Eligibility gates
+  are unchanged.
+- **Whole pool:** every weekly production value (270 players per horizon)
+  was checked against an independent per-game extract of the snapshot.
+  - Bucket game counts, FP/G and dates match; RECENT + EARLIER = every
+    current-season game, with no overlap.
+  - The prior counts as 2 games with share 2/(n + 2), monotone in games.
+  - Each value is (sum FP + 2 × prior) / (n + 2).
+  - 0 problems, 0 cross-surface inconsistencies and no Phase 7.1 basis
+    code. Rest of Season Outlook keeps its 10-game shrinkage.
+- **Exact pairs:** 28 pairs, 0 failures (live: impact only; deployed code at
+  the fresh instant: impact = replacements = board = optimizer). All 88
+  board cards and optimizer swaps equal the exact replacements-engine pair.
+- **Desktop page** (1440 × 1000, one worker; Chromium pinned to the
+  validated leaf key): 1 live test passed in 3.1 min.
+  - Covered: all four horizons; BEST MOVES RIGHT NOW (the backend no-move
+    state); OTHER GOOD OPTIONS with the 10 POTENTIAL TARGETS and their Phase
+    8 values; COMPARE A SPECIFIC DROP (drop Kris Dunn ×4, drop Jarrett Allen
+    in ROS).
+  - VIEW DETAILS and Full Waiver List details (DeRozan), opened by keyboard,
+    show the basis line, the exact arithmetic, three bucket lines and the
+    prior counted as 2 games; focus returned.
+  - axe 0 in 12 states; width 1440; 21 requests, all GET; no stale-model
+    warning; REFRESH WAIVER DATA never clicked.
+- **Database:** identical at 08:12, 09:09, 09:33, 10:10, 10:31, 10:32 and
+  10:59 UTC (inventory, 79,433 rows, newest timestamps, 6 migrations, every
+  write counter, the `yahoo_credentials` canary).
+- **Logs after the deploy:**
+  - the API logged 117 request timings, all GET 200, with 0 refresh,
+    provider, OAuth, transaction or error lines;
+  - nginx logged 795 requests, all GET, with 0 refresh POSTs.
+  - The replaced containers' logs (09:08–10:32) were deleted with them. For
+    that window the harness records every request this work sent (all GET),
+    and the identical database snapshots exclude any refresh or write.
+- **Remaining limitation:** `PRIOR_GAMES = 2` is observationally supported on
+  the 2026-27 games so far; re-evaluate it with more season data.
+
 # Phase 7.1 Compare-a-Drop Gate Fix — Deployed and Verified — 2026-11-21
 
-**STATUS: DEPLOYED AND VERIFIED (2026-11-21 21:46 UTC; 13:46 PST); in
-production until Phase 8 is deployed.** Model
+**STATUS: DEPLOYED AND VERIFIED (2026-11-21 21:46 UTC; 13:46 PST); replaced
+in production by Phase 8 at 2026-11-24 10:32 UTC.** Model
 `waiver-decision-integrity-phase7.1` was deployed from commit `7a02a4f`
 ("fix: make waiver drop summaries gate-aware"; at the time not pushed, with
 local `main` 2 ahead of `origin/main`).

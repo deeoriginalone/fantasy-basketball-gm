@@ -148,9 +148,9 @@
 ## Waiver Center Invariants
 
 - **Phase 8: weekly production season blend** (model
-  `waiver-season-blend-phase8`; validated and committed 2026-11-24;
-  deployment status is recorded in `docs/status/current-state.md`; no
-  migration). See `docs/sessions/2026-11-24.md`.
+  `waiver-season-blend-phase8`; **deployed** 2026-11-24 10:32 UTC from
+  commit `d16607f`, `api` and `frontend` only, no migration; rollback images
+  tagged `pre-phase8`). See `docs/sessions/2026-11-24.md`.
   - **Every current-season game contributes.** Rest of Week, Next 7 Days and
     Next 14 Days value a player at `(sum of current-season game Yahoo FP +
     PRIOR_GAMES × prior-season FP/G) / (current-season games +
@@ -199,9 +199,9 @@
     2026-11-21). Recommendation surfaces were not affected.
   - **Phase 7.1 contract** (`waiver-decision-integrity-phase7.1`;
     **deployed** 2026-11-21 21:46 UTC from commit `7a02a4f`, `api` and
-    `frontend` only, no migration; rollback images tagged `pre-phase71`;
-    production acceptance: 64 views, 0 violations, global BEST MOVES
-    unchanged):
+    `frontend` only, no migration; replaced in production by Phase 8 on
+    2026-11-24, which keeps this contract; production acceptance: 64 views,
+    0 violations, global BEST MOVES unchanged):
     - For an explicit drop, `WaiverBoard.drop_summary` (`build_drop_summary`)
       derives the answer from the cards' gated decisions in
       `replacement_order`, with the roster label's categories. Its `decision`
@@ -928,8 +928,8 @@
   - Heavy-read admission (one at a time, cancel on disconnect) is **deployed**
     (2026-11-15 14:50 UTC; rollback tag
     `fantasy-basketball-gm-api:pre-waiver-reliability`, which now predates
-    Phases 7 and 7.1 and must not be used to roll back today's pair). It
-    bounds the damage
+    Phases 7, 7.1 and 8 and must not be used to roll back a later release).
+    It bounds the damage
     from overlapping and abandoned reads but does not fix the host.
     Keeping the API resident (more RAM, swap off the rotational disk, or a
     no-swap limit for the `api` container) remains the infrastructure fix.
@@ -943,6 +943,18 @@
     compose-network IP with the old one; nginx resolves `api` only at start.
     If the IP changed, run `nginx -s reload` inside the frontend container;
     never recreate the frontend for DNS.
+  - `backend/requirements.txt` uses version ranges. When the pip layer is
+    not in the build cache, `docker compose build api` installs newer
+    releases (2026-11-24: fastapi 0.165.0, pydantic 2.14.4, SQLAlchemy
+    2.1.9). Compare `pip freeze` with the rollback image. On a difference,
+    run the backend suites inside the built image and a read-only shadow
+    parity check before deploying.
+  - Save the old containers' logs before `docker compose up` recreates them:
+    the json-file logs are deleted with the container.
+  - The host runs watchtower (daily, `--cleanup`). It recreated the
+    production `db` container on 2026-11-22 with a newer `postgres:16-alpine`
+    image (data volume kept), so `db` and `caddy` container IDs can change
+    between deployments.
 - Each provider import boundary is all-or-nothing: one bad request or
   statement discards everything that boundary fetched, and the previous
   snapshot stays. Batch every multi-row

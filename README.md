@@ -59,17 +59,15 @@ See the [gated follow-ups](docs/status/next-actions.md).
   409 contract failures remain visible errors, never HOLD or empty-success
   fallbacks. A timeout shows WAIVER ANALYSIS TIMED OUT with RETRY ANALYSIS
   and REFRESH WAIVER DATA, never raw proxy HTML. Production runs model
-  `waiver-decision-integrity-phase7.1` (Phase 7.1 deployed 2026-11-21 21:46
-  UTC, after Phase 7 at 16:36 UTC the same day). Earlier: Phase 6 deployed
+  `waiver-season-blend-phase8` (Phase 8 deployed 2026-11-24 10:32 UTC; see
+  Phase 8 below). Earlier: Phase 7.1 deployed 2026-11-21 21:46 UTC, after
+  Phase 7 at 16:36 UTC the same day; Phase 6 deployed
   2026-11-14, the explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and
   the API heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
   user-initiated. The Waiver Center is PC-only: browser acceptance runs at
   desktop 1440 × 1000, with the mobile tests kept but not required. The
   shared 7.3 GB host, with swap on its rotational disk, remains a capacity
-  limit. Phase 8, model `waiver-season-blend-phase8` (2026-11-24), replaces
-  the weekly production blend. It is validated and committed for
-  deployment; production keeps Phase 7.1 until the Phase 8 deployment is
-  recorded: see Phase 8 below.
+  limit.
 - **Yahoo Mock Practice:** one-time Windows observer install/pair, then join a
   12-team Yahoo mock, paste its draft URL, and Connect. Verified rounds and
   manager slot are required. Observations pass through the
@@ -331,10 +329,11 @@ explanation does not hold:
   - "Watch only" vs "Keep" roster labels.
 
 **Phase 8: weekly production season blend** (model
-`waiver-season-blend-phase8`; 2026-11-24 read-only audit, test-first
-implementation and local validation; committed for deployment, which is
-pending; production runs Phase 7.1 until then; no migration; see
-[the session notes](docs/sessions/2026-11-24.md)):
+`waiver-season-blend-phase8`; 2026-11-24 read-only audit and test-first
+implementation; **deployed** 2026-11-24 10:32 UTC from commit `d16607f` and
+verified read-only; no migration; rollback images are tagged `pre-phase8`;
+see [the session notes](docs/sessions/2026-11-24.md) and the
+[current-state report](docs/status/current-state.md)):
 
 - Rest of Week, Next 7 Days and Next 14 Days value every persisted
   current-season game once, in exactly one bucket (last 14 days, earlier this
@@ -350,11 +349,16 @@ pending; production runs Phase 7.1 until then; no migration; see
 - Eligibility is unchanged (sample gates still read the Last 14 Days sample);
   Rest of Season Outlook is unchanged. The page shows each bucket's games and
   share and the exact arithmetic; PRIOR-SEASON DRIVEN stays disclosed.
+- Production acceptance (GET only): the API and bundle serve Phase 8, and the
+  live payloads equal a read-only Phase-8 shadow of the same data. The
+  database is unchanged, with 0 refresh, provider or non-GET requests from
+  the deployment. The saved Yahoo evidence (2026-11-21) is past 24 hours, so
+  live decisions return after the next REFRESH WAIVER DATA.
 
 **Phase 7.1: Compare a Specific Drop answers from the gate** (model
 `waiver-decision-integrity-phase7.1`; **deployed** 2026-11-21 21:46 UTC from
-commit `7a02a4f` and verified read-only; no migration; rollback images are
-tagged `pre-phase71`; see the
+commit `7a02a4f` and verified read-only; replaced in production by Phase 8 on
+2026-11-24; no migration; rollback images are tagged `pre-phase71`; see the
 [current-state report](docs/status/current-state.md)):
 
 - The selected drop's answer comes from a backend `drop_summary` built from

@@ -84,7 +84,8 @@ every weekly value all season, earlier current-season games never counted,
 and 11 SUPPORTED ADDs (including Rest of Week DeRozan / Dunn) ranked an add
 who trailed on both current views. Phase 8 (`waiver-season-blend-phase8`)
 counts every current-season game once beside the prior season counted as 2
-games. It is validated and committed; deployment is the next action. See the
+games. It is **deployed and verified** (2026-11-24 10:32 UTC, commit
+`d16607f`, `api` and `frontend` only, no migration or data change). See the
 [2026-11-24 session record](../sessions/2026-11-24.md).
 
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
@@ -99,24 +100,39 @@ The Phase-5 deployment, the first refresh, the 2026-11-14 acceptance-fix
 patch, the Phase-6 deployment (2026-11-14 21:30 UTC), the Phase-6 ordering
 and wording cleanup deployment (2026-11-15 02:36 UTC) and the heavy-read
 admission deployment (2026-11-15 14:50 UTC), the Phase-7
-decision-integrity deployment (2026-11-21 16:36 UTC) and the Phase-7.1
-Compare-a-Drop deployment (2026-11-21 21:46 UTC) are complete (see the
+decision-integrity deployment (2026-11-21 16:36 UTC), the Phase-7.1
+Compare-a-Drop deployment (2026-11-21 21:46 UTC) and the Phase-8 weekly
+production blend deployment (2026-11-24 10:32 UTC) are complete (see the
 [current-state report](current-state.md)); do not repeat them.
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Deploy Phase 8** (`waiver-season-blend-phase8`; authorized
-   2026-11-24). Procedure: GET-only production baseline, a new private
-   `pg_dump -Fc` backup, rollback tags `pre-phase8` for `api` and `frontend`
-   proven against the running containers, serial builds, then
-   `docker compose up -d --no-deps api frontend` only. No migration and no
-   refresh. Acceptance is GET-only against a read-only Phase-8 shadow on the
-   same persisted data and clock.
-   - The persisted Yahoo evidence is from the 2026-11-21 15:50 refresh and
-     is past its 24-hour rule. Live boards therefore withhold rankings and
-     pair decisions (INSUFFICIENT EVIDENCE) in Phase 7.1 and in Phase 8
-     until the user's next REFRESH WAIVER DATA. Weekly model production
-     values and their buckets still show. Never refresh as part of a deploy.
+1. **Phase 8 is deployed and verified** (`waiver-season-blend-phase8`,
+   2026-11-24 10:32 UTC, commit `d16607f`, `api` and `frontend` only;
+   rollback tags `pre-phase8`); do not repeat it.
+   - Acceptance was GET-only against read-only shadows of the same data. The
+     live payloads equal the Phase 8 shadow, the database is unchanged, and
+     there were 0 refresh, provider or non-GET requests. Evidence:
+     `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md`.
+   - The saved Yahoo evidence (2026-11-21 15:50 refresh) is past its 24-hour
+     rule, so live boards withhold rankings and pair decisions (INSUFFICIENT
+     EVIDENCE) until the user's next REFRESH WAIVER DATA. The weekly model
+     production values and their buckets already show. Never refresh as
+     part of a deploy.
+   - **Rollback, only if ever needed:** retag both `pre-phase8` images as
+     `latest`, then `docker compose up -d --no-deps api frontend`. No
+     database rollback is needed.
+   - **Build note:** `backend/requirements.txt` uses version ranges. When the
+     pip layer is not cached, a rebuild picks up new releases: on 2026-11-24,
+     fastapi 0.165.0, pydantic 2.14.4 and SQLAlchemy 2.1.9. Validate the
+     built image before deploying (backend suites inside it and a read-only
+     shadow parity check), or decide to pin dependencies.
+   - **Host note:** the host's watchtower (daily, `--cleanup`) recreated the
+     production `db` container on 2026-11-22 05:25 UTC with a newer
+     `postgres:16-alpine` image; the data volume was kept. It can do the same
+     to `caddy`.
+   - **Logs:** save the replaced containers' logs before recreating them;
+     the json-file logs are deleted with the container.
 2. **Confirm in Yahoo before acting on a deployed recommendation.** The
    user's REFRESH WAIVER DATA at 15:50–15:58 UTC on 2026-11-21 (job
    `043e463ebb71`) saved the current snapshot. While that evidence was
@@ -137,33 +153,34 @@ may run as a side effect of review or documentation work.
    These are hypothetical analysis. Check FA/waiver state, locks, status and
    remaining weekly adds in Yahoo; the app never executes a move. Earlier
    answers (the Phase-6 Jackson / Allen pair and the 2026-11-14/15 pairs)
-   are historical. Phase 8 changes the weekly answers on this snapshot
-   (read-only shadow at its fresh instant): Rest of Week Tari Eason / Kevin
-   Huerter (+0.226), Next 7 and Next 14 Days Derrick Jones Jr. / Jarrett
-   Allen (+0.656 / +0.657), Rest of Season unchanged, and DeRozan / Dunn
-   DO NOT ADD (−0.42).
-3. **Phase 7.1 is deployed and verified** (2026-11-21 21:46 UTC, commit
-   `7a02a4f`, `api` and `frontend` only; rollback tags `pre-phase71`); do
-   not repeat it.
+   are historical. On the same snapshot at its fresh instant the deployed
+   Phase 8 code answers (read-only): Rest of Week Tari Eason / Kevin Huerter
+   (+0.226), Next 7 and Next 14 Days Derrick Jones Jr. / Jarrett Allen
+   (+0.656 / +0.657), Rest of Season unchanged, and DeRozan / Dunn DO NOT ADD
+   (−0.42). Live answers follow the next refresh.
+3. **Phase 7.1 was deployed and verified** (2026-11-21 21:46 UTC, commit
+   `7a02a4f`, `api` and `frontend` only; replaced by Phase 8 on 2026-11-24);
+   do not repeat it.
    - Compare a Specific Drop answers come from the gated `drop_summary`:
      BEST VALID REPLACEMENT, WATCH, HOLD <drop> or CANNOT EVALUATE. The raw
      leader appears only as a subordinate "HIGHEST RAW MODEL COMPARISON —
      not a recommendation", with its gate reason and an exact-pair Analyze.
+     Phase 8 keeps this unchanged.
    - Production acceptance: 64 drop × horizon views with 0 violations;
      global BEST MOVES unchanged; database unchanged; 0 refresh, provider
      or non-GET requests. Evidence:
      `qa-work/2026-11-21-phase71-deploy/deployment-acceptance.md`.
-   - **Rollback, only if ever needed:** retag both `pre-phase71` images as
-     `latest`, then `docker compose up -d --no-deps api frontend`. No
-     database rollback is needed.
+   - Its `pre-phase71` rollback tags now predate Phase 8 as well; roll Phase
+     8 back with `pre-phase8` (item 1), which is Phase 7.1 itself.
 4. **Watch the deployed heavy-read admission.** It has been live since
    2026-11-15 14:50 UTC; every API image since then carries it unchanged,
-   including the deployed Phase 7.1 api `687d0c98b3d0`.
+   including the deployed Phase 8 api `9bff7d62f56c` (`admission.py`,
+   `router.py` and `app/core` equal Phase 7.1's).
    - A cancelled read logs `status=499` with a `queue` phase in
      `request_timing`.
    - If it ever misbehaves, do not retag
      `fantasy-basketball-gm-api:pre-waiver-reliability`: that image predates
-     Phases 7 and 7.1, so it would revert them too and leave the 7.1
+     Phases 7, 7.1 and 8, so it would revert them too and leave the Phase 8
      frontend failing closed on the model mismatch. Plan a targeted fix
      instead.
    - It bounds abandoned and overlapping reads; it does not fix the host
@@ -190,9 +207,9 @@ may run as a side effect of review or documentation work.
    last 14 days + 0.588 × 30.73 prior, so he "beat" Dunn while trailing him
    on both current views) and ignored earlier current-season games. Phase 8
    counts every current-season game once beside the prior season counted as
-   2 games (`docs/sessions/2026-11-24.md`); deploying it is item 1.
+   2 games (`docs/sessions/2026-11-24.md`); it is deployed (item 1).
 
-   **Remaining method questions after Phase 8 is deployed** (decisions only;
+   **Remaining method questions now that Phase 8 is deployed** (decisions only;
    nothing changes without approval):
    1. **Short-horizon permanent-drop policy** (WC-18): a Next 7 or Next 14
       stream can permanently drop a much higher current-season producer
