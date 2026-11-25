@@ -1744,6 +1744,13 @@ const permanentRow = () => candidate(1, "Available Center",
   { verdict: "DO_NOT_ADD", recommended_action: "PASS", recommended_action_type: "HOLD", verdict_text: permanentVerdict,
     action_label: "HOLD: Keep Bench Forward. A +14.0 Yahoo FP edge in Next 7 Days does not cover the 356.4 Yahoo FP permanent drop cost.",
     evidence_blockers: [`Permanent-drop gate: ${PERMANENT_DETAIL}`] });
+// The axe heading-order rule over rendered markup: every heading at most one level deeper than the heading before it.
+const headingSkips = (html) => {
+  const levels = [...html.matchAll(/<h([1-6])[\s>]/g)].map((match) => Number(match[1]));
+  return levels.flatMap((level, index) => index > 0 && level > levels[index - 1] + 1 ? [`h${levels[index - 1]} -> h${level}`] : []);
+};
+const coveredCheck = () => permanentCheck({ supported: true, window_gain: 35, drop_value: 24.56, drop_excess: .5, permanent_cost: 35,
+  drop_rest_of_season_games: 72, drop_games_after_window: 70, lower_cost_drop: null, detail: "covered by the +35.0 window gain." });
 
 test("compare a specific drop: a blocked permanent drop shows the window gain, the drop cost and the lower-cost drop", () => {
   const row = permanentRow();
@@ -1766,6 +1773,12 @@ test("compare a specific drop: a blocked permanent drop shows the window gain, t
   assert.match(card, /<dt>Current season<\/dt><dd>Bench Forward 29\.7 vs add 16\.7 Yahoo FP\/G<\/dd>/);
   assert.match(card, /<dt>Lower-cost drop<\/dt><dd>Weak Guard: net \+0\.23, window \+4\.9 Yahoo FP, no permanent drop cost<\/dd>/);
   assert.doesNotMatch(html, /\b(risky|elite|premium|high-value)\b/i, "no unquantified labels");
+  // The card's title is an h4, so the block stays an h5 here, as it does in the Analyze dialog under "Exact calculation".
+  assert.deepEqual(headingSkips(html), [], "the explicit-drop answer never skips a heading level");
+  const dialog = render(load().ImpactContent, { impact: { model_version: VERSION, candidate: row, comparison: row.comparison, limitations: [] }, selectedDropId: 4 });
+  assert.match(dialog, /<h4>Exact calculation<\/h4>/);
+  assert.match(dialog, /<div class="waiver-permanent-drop is-blocked" role="group" aria-label="Permanent drop check: Bench Forward"><h5>PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN<\/h5>/);
+  assert.deepEqual(headingSkips(dialog), [], "the Analyze dialog never skips a heading level");
   const none = render(load().Replacements, { board: { ...board(4), candidates: [candidate(1, "Available Center",
     { ...drop(4, .5), explanation: explanation("Bench Forward", .5, { permanent_drop: permanentCheck({ lower_cost_drop: null }) }) },
     { verdict: "DO_NOT_ADD", recommended_action_type: "HOLD" })], drop_summary: summary, top_measured_candidate_id: 1,
@@ -1784,6 +1797,7 @@ test("the best move discloses its permanent drop: no cost against the waiver poo
   const block = html.slice(start, html.indexOf("</p></div>", start));
   assert.ok(start > 0, "the featured move shows the permanent-drop check");
   assert.match(block, /<h5>NO PERMANENT DROP COST<\/h5>/);
+  assert.deepEqual(headingSkips(html), [], "the best move's block follows its h4 Why, so it stays an h5");
   assert.match(block, /<dt>Permanent drop cost<\/dt><dd>0\.0 Yahoo FP: Bench Forward \(23\.04 FP\/G\) is not above Waiver Wing \(24\.06 FP\/G\)<\/dd>/);
   assert.match(block, /<dt>Result<\/dt><dd>PASS — no permanent drop cost<\/dd>/);
   assert.doesNotMatch(block, /Lower-cost drop|× \d+ games/);
@@ -1792,17 +1806,34 @@ test("the best move discloses its permanent drop: no cost against the waiver poo
   analysis.best_transaction = { ...analysis.best_transaction, comparison: covered };
   const coveredHtml = moves(analysis, pairBoard(analysis));
   assert.match(coveredHtml, /<h5>PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN<\/h5>/);
+  assert.deepEqual(headingSkips(coveredHtml), []);
   assert.match(coveredHtml, /<dt>Permanent drop cost<\/dt><dd>\(24\.56 − 24\.06 FP\/G\) × 70 games after this window = 35\.0 Yahoo FP<\/dd>/);
   assert.match(coveredHtml, /<dt>Result<\/dt><dd>PASS — the window gain covers the permanent drop cost<\/dd>/);
 });
 
-test("other good options show a blocked permanent drop on the exact pair with the backend blocker", () => {
+test("other good options show a permanent drop on the exact pair one heading level below the card title", () => {
   const result = fullRosterSupport((item) => item.player_id === 22 ? { ...item, verdict: "DO_NOT_ADD", headline: permanentVerdict,
-    blockers: [`Permanent-drop gate: ${PERMANENT_DETAIL}`], pair: optionPair({ net: .503714, window_points_gap: 14, permanent_drop: permanentCheck() }) } : null);
+    blockers: [`Permanent-drop gate: ${PERMANENT_DETAIL}`], pair: optionPair({ net: .503714, window_points_gap: 14, permanent_drop: permanentCheck() }) }
+    : item.player_id === 24 ? { ...item, pair: optionPair({ window_points_gap: 35, permanent_drop: coveredCheck() }) } : null);
+  result.decision_support.watch_ids = [24];
   const html = otherOptions(result);
   const wing = between(html, "<h3>BEST AVAILABLE WING / FORWARD", "<h3>BEST AVAILABLE CENTER");
   assert.ok(wing.includes(`<strong>Primary blocker:</strong> Permanent-drop gate: ${PERMANENT_DETAIL}`));
   assert.match(wing, /<div class="waiver-permanent-drop is-blocked" role="group"/);
   assert.match(wing, /<dt>Short-term gain<\/dt><dd>\+14\.0 Yahoo FP during Next 7 Days/);
   assert.match(wing, /<dt>Permanent drop cost<\/dt><dd>\(30\.00 − 24\.06 FP\/G\) × 60 games after this window = 356\.4 Yahoo FP<\/dd>/);
+  // Live axe heading-order defect (2026-11-25): the block sits directly under the card's h3 title, so an h5 skipped h4.
+  assert.match(wing, /<div class="waiver-permanent-drop is-blocked" role="group" aria-label="Permanent drop check: Bench Forward"><h4>PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN<\/h4>/);
+  // WATCHLIST cards in the same section sit under its h3 too.
+  assert.match(between(html, "<h3>WATCHLIST</h3>"), /<div class="waiver-permanent-drop" role="group" aria-label="Permanent drop check: Bench Forward"><h4>PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN<\/h4>/);
+  assert.deepEqual(headingSkips(html), [], "OTHER GOOD OPTIONS never skips a heading level");
+});
+
+test("a best measured card's permanent drop is one heading level below the card title", () => {
+  const support = decisionSupport({ best_measured_ids: [21, 22], options: decisionSupport().options.map((item) => item.player_id === 22
+    ? { ...item, pair: optionPair({ window_points_gap: 35, permanent_drop: coveredCheck() }) } : item) });
+  const html = moves(transactionAnalysis(), { ...board(null), roster_capacity: capacity("ADD_DROP"), decision_support: support });
+  assert.equal(html.match(/Top target to check/g)?.length, 2);
+  assert.match(between(html, '<h3 class="waiver-move-player">Group Wing</h3>'), /<div class="waiver-permanent-drop" role="group" aria-label="Permanent drop check: Bench Forward"><h4>PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN<\/h4>/);
+  assert.deepEqual(headingSkips(html), [], "BEST MOVES never skips a heading level");
 });

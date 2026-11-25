@@ -576,7 +576,7 @@ function ExplanationDetails({ explanation }: { explanation: PairExplanation }) {
     <p><strong>Schedule in {explanation.horizon}</strong> ({explanation.window_start ?? "?"} to {explanation.window_end ?? "?"}, persisted schedule rows):{" "}
       {explanation.add_name} {explanation.add_games ?? "unknown"} games{explanation.drop_name ? ` · ${explanation.drop_name} ${explanation.drop_games ?? "unknown"} games` : ""}.
       {explanation.window_points_gap != null && ` Window Yahoo fantasy points (games × FP/G, before daily lineup limits): ${explanation.add_window_points?.toFixed(1)} vs ${explanation.drop_window_points?.toFixed(1)} (${explanation.window_points_gap > 0 ? "+" : ""}${explanation.window_points_gap.toFixed(1)}).`}</p>
-    <PermanentDropFacts check={explanation.permanent_drop} dropName={explanation.drop_name} />
+    <PermanentDropFacts check={explanation.permanent_drop} dropName={explanation.drop_name} level={5} />
     <p><strong>Starting slots:</strong> {explanation.starting_slots_before ?? "?"} → {explanation.starting_slots_after ?? "?"} of {explanation.starting_slots_required ?? "?"}{explanation.starting_slots_after != null && explanation.starting_slots_before != null && explanation.starting_slots_after > explanation.starting_slots_before ? " (fills a starting slot)" : " (no fit change)"}.</p>
     {without.length > 0 && <p><strong>Would it still win without…</strong> {without.map(([key, value]) => `${label(key)}: ${value == null ? "unavailable" : `${value > 0 ? "+" : ""}${value.toFixed(4)}`}`).join(" · ")}.</p>}
     {omitted.length > 0 && <><h5>Not in this comparison</h5><ul>{omitted.map(([key, reason]) => <li key={key}>{label(key)}: {reason}</li>)}</ul></>}
@@ -599,9 +599,11 @@ function fp(value: number): string {
 }
 
 /** The backend's permanent-drop check for a weekly drop: the short-term window gain against what the drop gives up
- * for the rest of the season. Every number is a backend field; the browser computes nothing. */
-function PermanentDropFacts({ check, dropName }: { check: PermanentDropCheck | null | undefined; dropName: string | null | undefined }) {
+ * for the rest of the season. Every number is a backend field; the browser computes nothing. `level` keeps the
+ * document outline: 4 directly under a card's h3 title (option and best measured cards), 5 under an h4. */
+function PermanentDropFacts({ check, dropName, level }: { check: PermanentDropCheck | null | undefined; dropName: string | null | undefined; level: 4 | 5 }) {
   if (!check) return null;
+  const Heading = level === 4 ? "h4" : "h5";
   const drop = dropName ?? "The drop";
   const title = !check.supported ? "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN"
     : check.permanent_cost > 0 ? "PERMANENT DROP COST COVERED BY THE SHORT-TERM GAIN" : "NO PERMANENT DROP COST";
@@ -618,7 +620,7 @@ function PermanentDropFacts({ check, dropName }: { check: PermanentDropCheck | n
   const result = !check.supported ? "FAIL — the permanent drop cost exceeds the window gain"
     : check.permanent_cost > 0 ? "PASS — the window gain covers the permanent drop cost" : "PASS — no permanent drop cost";
   return <div className={`waiver-permanent-drop${check.supported ? "" : " is-blocked"}`} role="group" aria-label={`Permanent drop check: ${drop}`}>
-    <h5>{title}</h5>
+    <Heading>{title}</Heading>
     <dl className="waiver-move-facts">
       <div><dt>Short-term gain</dt><dd>{fp(check.window_gain)} Yahoo FP during {check.horizon} (window points, before daily lineup limits)</dd></div>
       <div><dt>Permanent drop cost</dt><dd>{cost}</dd></div>
@@ -661,7 +663,7 @@ function PairFacts({ option, mode, onDetails }: { option: DecisionOption; mode: 
       <div><dt>Primary reason</dt><dd>{pair.primary_reason || "No component improves the roster index."}</dd></div>
     </dl>
     <p className={`waiver-tradeoff${blocker ? " is-blocker" : ""}`}><strong>{blocker ? "Primary blocker" : "Primary tradeoff"}:</strong> {blocker ?? pair.primary_tradeoff ?? "None reported by the backend."}</p>
-    <PermanentDropFacts check={pair.permanent_drop} dropName={pair.drop_player_name} />
+    <PermanentDropFacts check={pair.permanent_drop} dropName={pair.drop_player_name} level={4} />
     <WhyThisDrop choice={pair.drop_choice} alternatives={pair.alternatives} />
     {pair.drop_player_name && <button className="button button-quiet" onClick={() => onDetails(option)}>Compare other drops: {option.player_name}</button>}
   </>;
@@ -989,7 +991,7 @@ function PairCard({ swap, mode, capacity, onAnalyze }: {
       {capacity && <li>Why a drop is required: {capacity.drop_requirement_reason}</li>}
     </ul>
     <Tradeoffs explanation={explanation} />
-    <PermanentDropFacts check={explanation?.permanent_drop} dropName={drop.player_name} />
+    <PermanentDropFacts check={explanation?.permanent_drop} dropName={drop.player_name} level={5} />
     <WhyThisDrop choice={add.drop_choice} alternatives={add.drop_alternatives} />
     <details><summary>Exact calculation, risks and role evidence</summary>
       {explanation && <ExplanationDetails explanation={explanation} />}
@@ -1142,7 +1144,7 @@ function ReplacementCard({ candidate, rank, onAnalyze }: {
         : explanation?.permanent_drop && !explanation.permanent_drop.supported
           ? <p className="waiver-outcome is-no-improvement"><strong>Positive window gain, but the drop is permanent.</strong> {explanation.permanent_drop.detail}</p>
           : <p className="waiver-outcome"><strong>Positive measured roster-index change.</strong> This is descriptive evidence, not a projection or guarantee.</p>)}
-    <PermanentDropFacts check={explanation?.permanent_drop} dropName={comparison?.player_name} />
+    <PermanentDropFacts check={explanation?.permanent_drop} dropName={comparison?.player_name} level={5} />
     {candidate.add_only_impact && <p className="waiver-outcome"><strong>Dropping is optional.</strong> Without a drop: {number(candidate.add_only_impact.before_score)} → {number(candidate.add_only_impact.after_score)} ({signed(candidate.add_only_impact.net_improvement)}) using an open roster spot.</p>}
     {comparison && (explanation
       ? <details><summary>Exact calculation for this drop</summary><ExplanationDetails explanation={explanation} /></details>

@@ -1466,7 +1466,7 @@ test("the exact pair shows every production bucket once, the prior-season share 
   await expect(opener).toBeFocused();
 });
 
-test("a weekly stream's permanent drop is quantified: the best move's drop cost, and an explicit premium drop held with a lower-cost drop", async ({ page }) => {
+test("a weekly stream's permanent drop is quantified: the best move's drop cost, an OTHER GOOD OPTIONS pick and an explicit premium drop held with a lower-cost drop", async ({ page }) => {
   // 2026-11-24 permanent-drop policy (model waiver-permanent-drop-phase9). Synthetic fixture; the numbers mirror the
   // read-only Next 7 Days trace (+14.0 window points against 356.4 Yahoo FP given up over 60 later games).
   scenario = "full";
@@ -1528,18 +1528,45 @@ test("a weekly stream's permanent drop is quantified: the best move's drop cost,
     await route.fulfill({ json: { league_key: "478.l.50505", team_key: "478.l.50505.t.9", mode: url.searchParams.get("mode"),
       model_version: VERSION, candidate: row, comparison: row.comparison, limitations: [] } });
   });
+  // OTHER GOOD OPTIONS: the guard pick's exact pair is held by the same permanent-drop check, as on the live Rest of Week
+  // board. The block sits directly under the card's h3 title, so its title must be an h4 (live axe heading-order defect).
+  const full = decisionSupport("full");
+  const guardPair = { comparison_type: "ADD_DROP", drop_player_id: 4, drop_player_name: "Bench Forward", net: .503714, add_ppg: 18.5,
+    drop_ppg: 30, basis_label: "This season (10 games) blended with 2025-26 counted as 2 games (17% prior season)", add_games: 4,
+    drop_games: 2, window_points_gap: 14, starting_slots_before: 3, starting_slots_after: 3, starting_slots_required: 2, statement: "",
+    primary_reason: "Schedule: 4 games vs 2 games in Next 7 Days", primary_tradeoff: null, blocker: `Permanent-drop gate: ${detail}`,
+    consistent: true, near_tie: false, alternatives: [], drop_choice: "", permanent_drop: check() };
+  const support = { ...full, groups: groups({ BEST_GUARD: 3, BEST_WING_FORWARD: 5 }, { 3: "DO_NOT_ADD" }),
+    options: full.options.map((item) => item.player_id === 3 ? { ...item, verdict: "DO_NOT_ADD", pair: guardPair,
+      headline: "DO NOT ADD — Overall Guard / drop Bench Forward: the permanent drop cost exceeds the short-term gain.",
+      blockers: [`Permanent-drop gate: ${detail}`] } : item) };
+  await page.route((url) => url.pathname === "/api/v1/waivers", async (route) => {
+    await route.fulfill({ json: { ...board(new URL(route.request().url()).searchParams.get("mode") ?? "this_week"), decision_support: support } });
+  });
   await page.goto("/waivers");
   const best = section(page, "BEST MOVES RIGHT NOW");
   await expect(best.getByRole("heading", { name: "ADD: Available Center", exact: true })).toBeVisible();
   await expect(best).toContainText("DROP: Weak Guard");
   await expect(best.locator(".waiver-verdict")).toHaveText("SUPPORTED ADD");
   const disclosed = best.getByRole("group", { name: "Permanent drop check: Weak Guard" }).first();
-  await expect(disclosed).toContainText("NO PERMANENT DROP COST");
+  // The best move's block follows the card's h4 Why, so it stays an h5.
+  await expect(disclosed.getByRole("heading", { level: 5, name: "NO PERMANENT DROP COST", exact: true })).toBeVisible();
   await expect(disclosed).toContainText("Short-term gain+4.9 Yahoo FP during Next 7 Days");
   await expect(disclosed).toContainText("Permanent drop cost0.0 Yahoo FP: Weak Guard (23.04 FP/G) is not above Waiver Wing (24.06 FP/G)");
   await expect(disclosed).toContainText("ResultPASS — no permanent drop cost");
   await expect(disclosed).toContainText(freeDetail);
   await expect(best.locator(".waiver-tradeoff").filter({ hasText: "Dropping is permanent" })).toContainText(freeDetail);
+  const options = section(page, "OTHER GOOD OPTIONS");
+  const guardCard = options.locator(".waiver-option-card")
+    .filter({ has: page.getByRole("heading", { name: "BEST AVAILABLE GUARD — do not add: no supported positive swap", exact: true }) });
+  await expect(guardCard.locator(".waiver-verdict")).toHaveText("DO NOT ADD");
+  await expect(guardCard).toContainText(`Primary blocker: Permanent-drop gate: ${detail}`);
+  const optionFacts = guardCard.getByRole("group", { name: "Permanent drop check: Bench Forward" });
+  await expect(optionFacts.getByRole("heading", { level: 4, name: "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN", exact: true })).toBeVisible();
+  await expect(optionFacts).toContainText("Permanent drop cost(30.00 − 24.06 FP/G) × 60 games after this window = 356.4 Yahoo FP");
+  await expect(optionFacts).toContainText("ResultFAIL — the permanent drop cost exceeds the window gain");
+  await expectNoBlockingOverflow(page);
+  await expectAccessible(page);
   // The explicit-drop tool shows the blocked premium drop honestly: its measured gain, its permanent cost and the lower-cost drop.
   const compare = section(page, "COMPARE A SPECIFIC DROP");
   await openDropPicker(page);
@@ -1554,7 +1581,7 @@ test("a weekly stream's permanent drop is quantified: the best move's drop cost,
   await expect(card.locator(".waiver-outcome")).toContainText(`Positive window gain, but the drop is permanent. ${detail}`);
   await expect(card).not.toContainText("Positive measured roster-index change");
   const facts = card.getByRole("group", { name: "Permanent drop check: Bench Forward" }).first();
-  await expect(facts.getByRole("heading", { name: "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN" })).toBeVisible();
+  await expect(facts.getByRole("heading", { level: 5, name: "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN" })).toBeVisible();
   await expect(facts).toContainText("Short-term gain+14.0 Yahoo FP during Next 7 Days");
   await expect(facts).toContainText("Permanent drop cost(30.00 − 24.06 FP/G) × 60 games after this window = 356.4 Yahoo FP");
   await expect(facts).toContainText("Drop vs best availableBench Forward 30.00 vs Waiver Wing 24.06 Yahoo FP/G (model production)");
@@ -1575,6 +1602,8 @@ test("a weekly stream's permanent drop is quantified: the best move's drop cost,
   await expect(dialog.locator(".waiver-verdict").first()).toHaveText("DO NOT ADD");
   await expect(dialog).toContainText(verdictText);
   await expect(dialog.getByRole("group", { name: "Permanent drop check: Bench Forward" })).toContainText("356.4 Yahoo FP");
+  await expect(dialog.getByRole("group", { name: "Permanent drop check: Bench Forward" })
+    .getByRole("heading", { level: 5, name: "PERMANENT DROP COST EXCEEDS THE SHORT-TERM GAIN", exact: true })).toBeVisible();
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   await expectAccessible(page);
   await page.keyboard.press("Escape");
