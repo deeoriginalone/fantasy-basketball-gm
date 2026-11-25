@@ -86,7 +86,10 @@ who trailed on both current views. Phase 8 (`waiver-season-blend-phase8`)
 counts every current-season game once beside the prior season counted as 2
 games. It is **deployed and verified** (2026-11-24 10:32 UTC, commit
 `d16607f`, `api` and `frontend` only, no migration or data change). See the
-[2026-11-24 session record](../sessions/2026-11-24.md).
+[2026-11-24 session record](../sessions/2026-11-24.md). Phase 9
+(`waiver-permanent-drop-phase9`) adds the short-horizon permanent-drop rule.
+It is **deployed and verified** (accepted 2026-11-25 02:31 UTC, commits
+`8e51670` and `db8d307`, no migration or data change; item 1).
 
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
 `PTS + 1.2*REB + 1.5*AST + 3*BLK + 3*STL - TO` from persisted Yahoo settings.
@@ -101,37 +104,44 @@ patch, the Phase-6 deployment (2026-11-14 21:30 UTC), the Phase-6 ordering
 and wording cleanup deployment (2026-11-15 02:36 UTC) and the heavy-read
 admission deployment (2026-11-15 14:50 UTC), the Phase-7
 decision-integrity deployment (2026-11-21 16:36 UTC), the Phase-7.1
-Compare-a-Drop deployment (2026-11-21 21:46 UTC) and the Phase-8 weekly
-production blend deployment (2026-11-24 10:32 UTC) are complete (see the
+Compare-a-Drop deployment (2026-11-21 21:46 UTC), the Phase-8 weekly
+production blend deployment (2026-11-24 10:32 UTC) and the Phase-9
+permanent-drop deployment (accepted 2026-11-25 02:31 UTC) are complete (see the
 [current-state report](current-state.md)); do not repeat them.
 Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
-1. **Immediate release action: the Phase 9 deployment closeout**
-   (`waiver-permanent-drop-phase9`, implemented and validated locally /
-   ready to deploy; authorized 2026-11-24 21:35 UTC). See item 7 and
-   `docs/sessions/2026-11-24.md`. `api` and `frontend` ship together; no
-   migration.
-   - **Unaccepted build in production:** a build of the uncommitted Phase 9
-     tree, made outside the release procedure, has served production since
-     21:24 UTC. Its origin is unknown, and the Phase 8 images were pruned.
-   - The closeout steps, in order:
-     1. Commit the source.
-     2. Rebuild Phase 8 from `2e6f379` as the `pre-phase9` rollback and prove
-        it.
-     3. Back up the database.
-     4. Compare read-only Phase 8 and Phase 9 shadows of the current snapshot.
-     5. Rebuild Phase 9 from the commit.
-     6. Accept it GET-only.
-   - **Rollback:** retag both `pre-phase9` images as `latest`, then
+1. **Phase 9 is deployed and verified** (`waiver-permanent-drop-phase9`,
+   accepted 2026-11-25 02:31 UTC); do not repeat it. The API runs the
+   `8e51670` build (since 2026-11-24 21:24 UTC) and the frontend runs the
+   accessibility fix `db8d307` (since 2026-11-25 01:52 UTC). No migration.
+   See item 7 and `docs/sessions/2026-11-24.md`.
+   - **How it was deployed:**
+     1. A build of the then-uncommitted Phase 9 tree recreated `api` and
+        `frontend` at 21:20–21:24 UTC, outside the planned closeout (origin
+        unknown).
+     2. REFRESH WAIVER DATA at 21:24:35 UTC set the data baseline, which the
+        closeout kept.
+     3. The closeout proved live Phase 9 equal to the committed Phase 9
+        shadow.
+     4. Its first browser acceptance failed axe `heading-order` (the
+        permanent-drop block was an h5 under an h3 inside OTHER GOOD OPTIONS
+        cards).
+     5. The fix was deployed frontend-only, and the final desktop acceptance
+        passed with axe 0.
+   - **Acceptance (GET only):** the live payloads equal the Phase 9 shadow;
+     the database is unchanged; 0 refresh, provider, OAuth or non-GET
+     requests. Evidence: `qa-work/2026-11-24-phase9-deploy/` (fix-forward in
+     `fix-forward/`).
+   - **Rollback:** the fix alone: retag
+     `fantasy-basketball-gm-frontend:pre-phase9-a11y` as `latest`, then
+     `docker compose up -d --no-deps frontend` (brings back the heading
+     defect). All of Phase 9: retag both `pre-phase9` images (Phase 8, rebuilt
+     from `2e6f379`) as `latest`, then
      `docker compose up -d --no-deps api frontend`. No database rollback is
      needed. `pre-phase8` holds Phase 7.1.
-   - **Phase 8 is the last verified deployment**
-     (`waiver-season-blend-phase8`, 2026-11-24 10:32 UTC, commit `d16607f`,
-     `api` and `frontend` only); do not repeat it.
-   - Phase 8 acceptance was GET-only against read-only shadows of the same
-     data. The live payloads equal the Phase 8 shadow, the database is
-     unchanged, and there were 0 refresh, provider or non-GET requests.
+   - **Phase 8** (`waiver-season-blend-phase8`, 2026-11-24 10:32 UTC, commit
+     `d16607f`) was the previous verified deployment; do not repeat it.
      Evidence: `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md`.
    - **Latest data refresh:** REFRESH WAIVER DATA ran from an open `/waivers`
      page on 2026-11-24 at 21:24:35 UTC (job `f56f60744a47`, SUCCEEDED). It
@@ -152,8 +162,8 @@ may run as a side effect of review or documentation work.
      the json-file logs are deleted with the container.
 2. **Confirm in Yahoo before acting on a deployed recommendation.** The
    user's REFRESH WAIVER DATA at 15:50–15:58 UTC on 2026-11-21 (job
-   `043e463ebb71`) saved the current snapshot. While that evidence was
-   fresh, the live page (Phase 7.1) showed:
+   `043e463ebb71`) saved the snapshot behind the first answers below. While
+   that evidence was fresh, the live page (Phase 7.1) showed:
    - Rest of Week: ADD DeMar DeRozan / DROP Kris Dunn (+0.589), flagged
      PRIOR-SEASON DRIVEN and drop-permanent.
    - Next 7 Days: STREAM Keldon Johnson / DROP Jarrett Allen (+0.566). The
@@ -174,7 +184,13 @@ may run as a side effect of review or documentation work.
    Phase 8 code answers (read-only): Rest of Week Tari Eason / Kevin Huerter
    (+0.226), Next 7 and Next 14 Days Derrick Jones Jr. / Jarrett Allen
    (+0.656 / +0.657), Rest of Season unchanged, and DeRozan / Dunn DO NOT ADD
-   (−0.42). Live answers follow the next refresh.
+   (−0.42). The live Phase 9 page on the 2026-11-24 21:24 refresh (fresh
+   until about 21:24 UTC on 2026-11-25) shows:
+   - Rest of Week: ADD Derrick Jones Jr. / DROP Kevin Huerter.
+   - Next 7 Days: ADD DeMar DeRozan / DROP Kris Dunn, with no permanent drop
+     cost (Dunn 23.04 vs Tari Eason 24.06 FP/G).
+   - Next 14 Days: ADD Derrick Jones Jr. / DROP Kevin Huerter.
+   - Rest of Season Outlook: ADD Pelle Larsson / DROP Kevin Huerter.
 3. **Phase 7.1 was deployed and verified** (2026-11-21 21:46 UTC, commit
    `7a02a4f`, `api` and `frontend` only; replaced by Phase 8 on 2026-11-24);
    do not repeat it.
@@ -191,13 +207,13 @@ may run as a side effect of review or documentation work.
      8 back with `pre-phase8` (item 1), which is Phase 7.1 itself.
 4. **Watch the deployed heavy-read admission.** It has been live since
    2026-11-15 14:50 UTC; every API image since then carries it unchanged,
-   including the deployed Phase 8 api `9bff7d62f56c` (`admission.py`,
+   including the deployed Phase 9 api `e8ec57d94aae` (`admission.py`,
    `router.py` and `app/core` equal Phase 7.1's).
    - A cancelled read logs `status=499` with a `queue` phase in
      `request_timing`.
    - If it ever misbehaves, do not retag
      `fantasy-basketball-gm-api:pre-waiver-reliability`: that image predates
-     Phases 7, 7.1 and 8, so it would revert them too and leave the Phase 8
+     Phases 7, 7.1, 8 and 9, so it would revert them too and leave the Phase 9
      frontend failing closed on the model mismatch. Plan a targeted fix
      instead.
    - It bounds abandoned and overlapping reads; it does not fix the host
@@ -209,7 +225,12 @@ may run as a side effect of review or documentation work.
    page tests; then let I/O pressure settle again before loading the page.
    On 2026-11-21 Chromium's start pushed the API back into swap, and a page
    load right after a 122 s warm-up hit a 504 on its queued best-moves read.
-   Never run heavy reads in parallel.
+   Never let the client abandon the warm-up read: on 2026-11-25 a 600 s
+   client timeout cut one off (API `status=499`, the API paged out under
+   other workloads' I/O), and that attempt was voided and repeated.
+   Never run heavy reads in parallel. Browser acceptance must reach every
+   surface that renders a new block: the mocked Phase 9 scenario missed
+   OTHER GOOD OPTIONS, where live axe found the heading-order defect.
 6. **Review the tiered-sample observations** (decision only; nothing
    changes without approval):
    - The 13% FP/G tolerance decides exactly one promotion, Kris Dunn
@@ -224,20 +245,20 @@ may run as a side effect of review or documentation work.
    last 14 days + 0.588 × 30.73 prior, so he "beat" Dunn while trailing him
    on both current views) and ignored earlier current-season games. Phase 8
    counts every current-season game once beside the prior season counted as
-   2 games (`docs/sessions/2026-11-24.md`); it is deployed (item 1).
+   2 games (`docs/sessions/2026-11-24.md`); it is deployed (Phase 9 keeps it).
 
-   **Remaining method questions now that Phase 8 is deployed** (decisions only;
-   nothing changes without approval):
-   1. **Short-horizon permanent-drop policy** (WC-18): **DECIDED, implemented
-      and validated locally, ready to deploy (2026-11-24, Phase 9; the
-      deployment closeout is item 1).** A weekly
+   **Remaining method questions now that Phases 8 and 9 are deployed**
+   (decisions only; nothing changes without approval):
+   1. **Short-horizon permanent-drop policy** (WC-18): **DECIDED and
+      DEPLOYED (Phase 9, verified 2026-11-25; item 1).** A weekly
       stream that leans on a schedule edge must cover the drop's production
       above the best available player over his remaining games
       (replacement break-even in Yahoo FP). Otherwise it is HOLD / DO NOT ADD,
       and the optimizer moves to a cheaper drop. Evidence:
-      `qa-work/2026-11-24-permanent-drop-audit/`. Remaining: the deployment
-      closeout (item 1). Known limit: remaining games run to the end
-      of the NBA regular season, not the fantasy league's end.
+      `qa-work/2026-11-24-permanent-drop-audit/`. Known limits: remaining
+      games run to the end of the NBA regular season, not the fantasy
+      league's end or playoffs; replacement level assumes the best available
+      player stays available.
    2. **Next independent method decision: schedule component scaling.** The
       schedule component is the
       percentile of an integer game count, so 1–3 games can swing it by

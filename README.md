@@ -58,12 +58,10 @@ See the [gated follow-ups](docs/status/next-actions.md).
   labeled ADD, STREAM or MUST ADD. Incompatible model versions are not decision-ready; structured HTTP
   409 contract failures remain visible errors, never HOLD or empty-success
   fallbacks. A timeout shows WAIVER ANALYSIS TIMED OUT with RETRY ANALYSIS
-  and REFRESH WAIVER DATA, never raw proxy HTML. The last verified
-  deployment is model `waiver-season-blend-phase8` (Phase 8, 2026-11-24
-  10:32 UTC; see Phase 8 below). Phase 9 (`waiver-permanent-drop-phase9`)
-  is implemented and validated locally and ready to deploy. A build of it
-  made outside the release procedure has served production since
-  2026-11-24 21:24 UTC and is not yet accepted. Earlier: Phase 7.1 deployed 2026-11-21 21:46 UTC, after
+  and REFRESH WAIVER DATA, never raw proxy HTML. The deployed and verified
+  model is `waiver-permanent-drop-phase9` (Phase 9, accepted 2026-11-25
+  02:31 UTC; see Phase 9 below). Earlier: Phase 8 deployed 2026-11-24
+  10:32 UTC; Phase 7.1 deployed 2026-11-21 21:46 UTC, after
   Phase 7 at 16:36 UTC the same day; Phase 6 deployed
   2026-11-14, the explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and
   the API heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
@@ -331,11 +329,14 @@ explanation does not hold:
   - lineup gaps in dates;
   - "Watch only" vs "Keep" roster labels.
 
-**Phase 9 (implemented and validated locally / ready to deploy):
-short-horizon permanent-drop policy** (model `waiver-permanent-drop-phase9`;
-2026-11-24 read-only audit and test-first implementation; deployment
-closeout authorized 2026-11-24, acceptance pending; see
-[the session notes](docs/sessions/2026-11-24.md)):
+**Phase 9: short-horizon permanent-drop policy** (model
+`waiver-permanent-drop-phase9`; 2026-11-24 read-only audit and test-first
+implementation; **deployed and verified** 2026-11-25 02:31 UTC: the API from
+commit `8e51670`, the frontend with the accessibility fix `db8d307`; GET-only
+acceptance; no migration; rollback images are tagged `pre-phase9` (Phase 8)
+and `pre-phase9-a11y` (the `8e51670` frontend); see
+[the session notes](docs/sessions/2026-11-24.md) and the
+[current-state report](docs/status/current-state.md)):
 
 - A Rest of Week, Next 7 Days or Next 14 Days ADD + DROP whose positive net
   leans on a schedule edge is supported only when its window Yahoo FP cover
@@ -352,6 +353,15 @@ closeout authorized 2026-11-24, acceptance pending; see
   - the drop against the best available player, and the remaining games;
   - PASS / FAIL, current-season values and any lower-cost drop.
 - Rest of Season Outlook, no-drop additions and IL moves are unchanged.
+- Deployment: a build of the uncommitted tree served production from
+  2026-11-24 21:24 UTC, outside the release procedure, and a user refresh at
+  21:24 set the data baseline. The closeout proved the live service equal to
+  the committed source. Its first browser acceptance found a heading-order
+  defect (the block skipped h4 inside OTHER GOOD OPTIONS cards), fixed
+  forward in the frontend.
+- Known limits: remaining games run to the end of the NBA regular season,
+  not the fantasy playoffs; replacement level assumes the best available
+  player stays available.
 
 **Phase 8: weekly production season blend** (model
 `waiver-season-blend-phase8`; 2026-11-24 read-only audit and test-first

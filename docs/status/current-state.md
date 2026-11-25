@@ -1,27 +1,46 @@
-# CURRENT STATE — Phase 9 Permanent-Drop Policy Ready to Deploy; Phase 8 Last Verified Deployment — 2026-11-24
+# CURRENT STATE — Phase 9 Permanent-Drop Policy Deployed and Verified — 2026-11-25
 
-**STATUS: PHASE 9 IMPLEMENTED AND VALIDATED LOCALLY / READY TO DEPLOY**
-(model `waiver-permanent-drop-phase9`, 2026-11-24). The deployment closeout
-was requested at 21:35 UTC. Phase 9 is not deployed until production
-acceptance passes. See "Phase 9 (ready to deploy)" below.
+**STATUS: PHASE 9 DEPLOYED AND VERIFIED** (model `waiver-permanent-drop-phase9`;
+accepted 2026-11-25 02:31 UTC). Source commit `8e51670` ("fix: protect
+long-term roster value on short waiver streams") and the accessibility fix
+`db8d307` ("fix: preserve heading order in permanent drop facts"), both
+pushed to `origin/main`.
 
-**Production is serving a Phase 9 build that has not been accepted.**
+- **Running:** api `e8ec57d94aae` (since 2026-11-24 21:24 UTC; its image
+  equals the `8e51670` build) and frontend `684201829a5b` (`db8d307`, since
+  2026-11-25 01:52 UTC). db and caddy were not recreated. No migration.
+- **Acceptance (GET only):**
+  - The live payloads equal a read-only Phase 9 shadow of the same data.
+  - The desktop browser acceptance (1440 × 1000) passed with axe 0
+    violations in 16 states. It checked every permanent-drop block against
+    the backend: OTHER GOOD OPTIONS (h4), the best move, explicit drops and
+    the Analyze dialog (h5).
+  - The database is unchanged, with 0 refresh, provider, OAuth or non-GET
+    requests from the closeout.
+- **How it was deployed** (details in `docs/sessions/2026-11-24.md`):
+  1. At 21:20–21:24 UTC on 2026-11-24 a build of the then-uncommitted Phase 9
+     tree recreated `api` and `frontend`, outside the planned closeout. Its
+     origin is unknown.
+  2. REFRESH WAIVER DATA ran at 21:24:35 UTC from an open `/waivers` page
+     (job `f56f60744a47`). It established the data baseline, and the
+     closeout did not undo it.
+  3. The closeout committed the source, rebuilt Phase 8 as the `pre-phase9`
+     rollback and backed up the database. It proved live Phase 9 equal to
+     the committed Phase 9 shadow; only the frontend needed recreating
+     (23:59 UTC).
+  4. The first formal browser acceptance (00:19 UTC) failed axe
+     `heading-order`: inside an OTHER GOOD OPTIONS card (h3 title) the
+     permanent-drop block used an h5.
+  5. The fix was deployed frontend-only (01:52 UTC). The final desktop
+     acceptance passed (02:22–02:31 UTC).
+- **Rollback:** the fix alone with `pre-phase9-a11y` (the `8e51670`
+  frontend, heading defect included), or all of Phase 9 with the two
+  `pre-phase9` images (Phase 8). No database rollback is needed.
 
-- At 21:20–21:24 UTC an out-of-procedure `docker compose` build of the
-  then-uncommitted working tree replaced `api` and `frontend`. Its origin is
-  unknown.
-- Production has served `waiver-permanent-drop-phase9` since 21:24 UTC. The
-  running API's files equal the validated working tree.
-- The Phase 8 images are no longer present (pruned; cause unknown).
-- A REFRESH WAIVER DATA from an open `/waivers` page followed at 21:24:35 UTC
-  (job `f56f60744a47`, SUCCEEDED). It was not this work.
-- The closeout first rebuilds Phase 8 from `2e6f379` as the rollback. It
-  keeps Phase 9 only if acceptance passes.
-
-**LAST VERIFIED DEPLOYMENT: PHASE 8 (2026-11-24 10:32 UTC; 02:32 PST).**
+**PREVIOUS VERIFIED DEPLOYMENT: PHASE 8 (2026-11-24 10:32 UTC; 02:32 PST).**
 Model `waiver-season-blend-phase8` was deployed from commit `d16607f` ("fix:
 use current-season evidence in waiver production blend"), which is pushed to
-`origin/main` together with its record.
+`origin/main` together with its record. Phase 9 replaced it.
 
 - Only `api` and `frontend` were recreated.
 - No migration, refresh, provider call, OAuth, Yahoo transaction or data
@@ -31,7 +50,7 @@ use current-season evidence in waiver production blend"), which is pushed to
   `qa-work/2026-11-24-weekly-blend-audit/weekly-blend-report.md` (audit) and
   `qa-work/2026-11-24-phase8-deploy/deployment-acceptance.md` (deployment).
 
-### Phase 9 (ready to deploy): short-horizon permanent-drop policy
+### Phase 9 (deployed and verified): short-horizon permanent-drop policy
 
 - **Rule (E2, replacement break-even).** In Rest of Week, Next 7 Days and Next
   14 Days, an ADD + DROP whose consistent positive net leans on a schedule
@@ -68,12 +87,20 @@ use current-season evidence in waiver production blend"), which is pushed to
   - the drop against the best available player, and the remaining games;
   - PASS / FAIL, current-season values and any lower-cost drop.
 
-  The browser computes none of it.
-- **Validation and acceptance:** see `docs/sessions/2026-11-24.md`. The
-  deployment closeout was authorized on 2026-11-24 at 21:35 UTC. `api` and
-  `frontend` ship together because the bundle expects the new model version.
-  No migration. The rollback target is Phase 8, rebuilt from `2e6f379` and
-  tagged `pre-phase9` during the closeout. `pre-phase8` holds Phase 7.1.
+  The browser computes none of it. The block's title is an h4 directly under
+  a card's h3 title (OTHER GOOD OPTIONS, WATCHLIST and best measured cards)
+  and an h5 under an h4 (the best move, explicit-drop cards and every exact
+  calculation).
+- **Validation and acceptance:** see `docs/sessions/2026-11-24.md`. Deployed
+  and verified 2026-11-25 02:31 UTC (GET-only acceptance; no migration). The
+  API runs the `8e51670` build; the frontend runs `db8d307`. Rollback tags:
+  `pre-phase9` (Phase 8, rebuilt from `2e6f379`) and `pre-phase9-a11y` (the
+  `8e51670` frontend). `pre-phase8` holds Phase 7.1.
+- **Known limitations.** Remaining games count to the end of the NBA regular
+  season, not the fantasy league's end or playoffs, so late in the season the
+  gate is slightly stricter than the fantasy schedule warrants. Replacement
+  level assumes the best available player stays available; it is re-read on
+  every request.
 
 ### Method (weekly horizons only)
 

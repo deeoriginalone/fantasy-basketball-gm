@@ -148,8 +148,11 @@
 ## Waiver Center Invariants
 
 - **Phase 9: short-horizon permanent-drop policy** (model
-  `waiver-permanent-drop-phase9`, 2026-11-24; implemented and validated
-  locally / ready to deploy). See `docs/sessions/2026-11-24.md`.
+  `waiver-permanent-drop-phase9`; **deployed and verified** 2026-11-25 02:31
+  UTC: the API from commit `8e51670`, the frontend with the accessibility fix
+  `db8d307`; no migration; rollback tags `pre-phase9` (Phase 8) and
+  `pre-phase9-a11y` (the `8e51670` frontend)). See
+  `docs/sessions/2026-11-24.md`.
   - **Rule:** in Rest of Week, Next 7 Days and Next 14 Days, an ADD + DROP
     whose consistent positive net leans on a schedule edge is supported only
     when `window gain >= max(0, drop FP/G − replacement FP/G) × drop games
@@ -179,6 +182,17 @@
       cost`. Both values are 2-dp backend roundings whose difference is
       `drop_excess`, so the shown arithmetic reproduces the cost;
     - remaining games, PASS / FAIL and the lower-cost drop.
+    - The block's title level follows the page outline: h4 directly under a
+      card's h3 title (OTHER GOOD OPTIONS group and WATCHLIST cards, best
+      measured cards), h5 under an h4 (the best move after "Why", explicit-drop
+      cards, every exact calculation including the Analyze dialog). An h5
+      under an h3 failed live axe `heading-order` on 2026-11-25; the desktop
+      Phase 9 scenario now runs axe on an OTHER GOOD OPTIONS card with the
+      block.
+  - **Known limits:** remaining games run to the end of the NBA regular
+    season, not the fantasy league's end or playoffs, so the gate is slightly
+    stricter than the fantasy schedule late in the season. Replacement level
+    assumes the best available player stays available (re-read per request).
 
 - **Phase 8: weekly production season blend** (model
   `waiver-season-blend-phase8`; **deployed** 2026-11-24 10:32 UTC from
