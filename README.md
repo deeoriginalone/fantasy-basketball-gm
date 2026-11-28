@@ -58,17 +58,25 @@ See the [gated follow-ups](docs/status/next-actions.md).
   labeled ADD, STREAM or MUST ADD. Incompatible model versions are not decision-ready; structured HTTP
   409 contract failures remain visible errors, never HOLD or empty-success
   fallbacks. A timeout shows WAIVER ANALYSIS TIMED OUT with RETRY ANALYSIS
-  and REFRESH WAIVER DATA, never raw proxy HTML. The deployed and verified
+  and REFRESH WAIVER DATA, never raw proxy HTML. The running app's verified
   model is `waiver-permanent-drop-phase9` (Phase 9, accepted 2026-11-25
-  02:31 UTC; see Phase 9 below). Earlier: Phase 8 deployed 2026-11-24
+  02:31 UTC and re-verified read-only on 2026-11-28; see Phase 9 below).
+  Weekly comparisons need a supported weekly value for every non-injury
+  roster player: one without it (for example a Yahoo O player with no game
+  in seven days held in an active slot because every IL slot is full) makes
+  every Rest of Week, Next 7 Days and Next 14 Days comparison CANNOT EVALUATE
+  (fail-closed; Rest of Season Outlook still answers). Earlier: Phase 8 deployed 2026-11-24
   10:32 UTC; Phase 7.1 deployed 2026-11-21 21:46 UTC, after
   Phase 7 at 16:36 UTC the same day; Phase 6 deployed
   2026-11-14, the explicit-drop ordering cleanup 2026-11-15 02:36 UTC, and
   the API heavy-read admission 2026-11-15 14:50 UTC. Provider refresh stays
   user-initiated. The Waiver Center is PC-only: browser acceptance runs at
   desktop 1440 × 1000, with the mobile tests kept but not required. The
-  shared 7.3 GB host, with swap on its rotational disk, remains a capacity
-  limit.
+  shared 7.3 GB host remains a capacity limit. Since 2026-11-28 its swap is
+  an 8 GiB file on a USB 3 SSD (`vm.swappiness` 10), and the `api` service
+  is memory-limited without swap (1.5 GB limit, 512 MB reservation), so the
+  API itself is no longer paged out; PostgreSQL data still sits on the
+  rotational disk.
 - **Yahoo Mock Practice:** one-time Windows observer install/pair, then join a
   12-team Yahoo mock, paste its draft URL, and Connect. Verified rounds and
   manager slot are required. Observations pass through the
@@ -359,9 +367,20 @@ and `pre-phase9-a11y` (the `8e51670` frontend); see
   the committed source. Its first browser acceptance found a heading-order
   defect (the block skipped h4 inside OTHER GOOD OPTIONS cards), fixed
   forward in the frontend.
+- Scope: a production-cost pair is checked when its holding schedule claim is
+  one of its compensators, even if a roster-fit gain also compensates; only
+  pairs compensated by fit alone are exempt, and the gate does not credit the
+  fit gain.
+- Re-verified 2026-11-28 (read-only; nothing rebuilt or recreated): the
+  running API and frontend equal `8e51670`/`db8d307` byte for byte, all suites
+  pass, the live payloads equal the Phase 9 code on the same data, and the
+  desktop browser acceptance passed with axe 0. See
+  [the 2026-11-28 session notes](docs/sessions/2026-11-28.md).
 - Known limits: remaining games run to the end of the NBA regular season,
   not the fantasy playoffs; replacement level assumes the best available
-  player stays available.
+  player stays available. Persisted schedules do not exclude games that do
+  not count for fantasy, such as the NBA Cup Championship (2026-12-11) once
+  its teams are set, so window games and remaining games could include it.
 
 **Phase 8: weekly production season blend** (model
 `waiver-season-blend-phase8`; 2026-11-24 read-only audit and test-first

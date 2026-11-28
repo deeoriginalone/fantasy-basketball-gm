@@ -89,7 +89,9 @@ games. It is **deployed and verified** (2026-11-24 10:32 UTC, commit
 [2026-11-24 session record](../sessions/2026-11-24.md). Phase 9
 (`waiver-permanent-drop-phase9`) adds the short-horizon permanent-drop rule.
 It is **deployed and verified** (accepted 2026-11-25 02:31 UTC, commits
-`8e51670` and `db8d307`, no migration or data change; item 1).
+`8e51670` and `db8d307`, no migration or data change; item 1) and was
+**re-verified read-only on 2026-11-28** with nothing rebuilt or recreated
+(`docs/sessions/2026-11-28.md`).
 
 Driveway Dudes is Head-to-Head Points, not categories. Fantasy PPG uses
 `PTS + 1.2*REB + 1.5*AST + 3*BLK + 3*STL - TO` from persisted Yahoo settings.
@@ -112,10 +114,13 @@ Nothing below may run without explicit user authorization, and none of it
 may run as a side effect of review or documentation work.
 
 1. **Phase 9 is deployed and verified** (`waiver-permanent-drop-phase9`,
-   accepted 2026-11-25 02:31 UTC); do not repeat it. The API runs the
-   `8e51670` build (since 2026-11-24 21:24 UTC) and the frontend runs the
-   accessibility fix `db8d307` (since 2026-11-25 01:52 UTC). No migration.
-   See item 7 and `docs/sessions/2026-11-24.md`.
+   accepted 2026-11-25 02:31 UTC; re-verified read-only 2026-11-28); do not
+   repeat it. The running app's API is `ae3a52bf1e8a`, recreated by a
+   `docker compose up -d` on 2026-11-28 16:45 UTC from the same `8e51670`
+   image (it applied the uncommitted Compose memory keys; item 8). The
+   frontend runs the accessibility fix `db8d307` (since 2026-11-25 01:52
+   UTC). No migration. See item 7, `docs/sessions/2026-11-24.md` and
+   `docs/sessions/2026-11-28.md`.
    - **How it was deployed:**
      1. A build of the then-uncommitted Phase 9 tree recreated `api` and
         `frontend` at 21:20–21:24 UTC, outside the planned closeout (origin
@@ -291,6 +296,16 @@ may run as a side effect of review or documentation work.
      timeouts to hide it. Bounding concurrent heavy waiver reads and stopping
      work for disconnected clients are deployed (2026-11-15 14:50 UTC, item
      4); they bound the damage, but the host constraint itself remains.
+   - **2026-11-28 (host work):** swap moved to an 8 GiB file on a USB 3 SSD
+     (`vm.swappiness` 10), and the `api` service runs without swap (1.5 GB
+     limit, 512 MB reservation). A first read after 4.5 h idle took 8.98 s
+     (52.8 s that morning), and the re-verification saw 0 kB API swap and
+     4.6–9.6 s warm reads.
+     - **Open decision:** commit the `docker-compose.yml` memory keys (still
+       uncommitted) so a checkout or rebuild cannot silently drop them.
+     - PostgreSQL data stays on the rotational disk, and 16 GB RAM remains
+       the larger fix. Record:
+       `qa-work/2026-11-28-swap-infra/CURRENT_STATE_AND_ROLLBACK.md`.
 9. **Later refreshes** are user-initiated from `/waivers` when the panel
    reports stale sources (Yahoo after 24 hours, NBA after 7 days). Never call
    the individual import routes or refresh as a side effect. An API restart or
@@ -299,6 +314,18 @@ may run as a side effect of review or documentation work.
    reason to refresh. If the panel cannot read freshness, wait for the API
    instead of clicking again: a POST that timed out in the browser can still
    start the job once the API catches up (2026-11-15, job `68a294158101`).
+10. **2026-11-28 findings awaiting the user's prioritization decision**
+    (evidence: `docs/sessions/2026-11-28.md`; nothing changes without
+    approval):
+    - **Weekly blind spot (fail-closed):** one non-injury roster player
+      without a weekly value (Yahoo O, no game in 7+ days, IL 3/3) makes
+      every weekly pair CANNOT EVALUATE. This was true on the 2026-11-28
+      snapshot for all three weekly horizons.
+    - **Non-counting games in schedules:** `rebuild_player_schedule` keeps
+      every game with both teams known. The NBA Cup Championship
+      (2026-12-11), which does not count for fantasy, will enter the
+      finalists' window games once its teams are set (after the 2026-12-08
+      semifinals) and the user refreshes.
 
 ## Remaining Evidence Roadmap
 

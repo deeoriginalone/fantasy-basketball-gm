@@ -175,6 +175,13 @@
   - **Never checked:** Rest of Season Outlook, ADD ONLY, MOVE TO IL THEN
     ADD, production-led pairs (the add produces at least as much) and fit-led
     pairs.
+    - Scope precision (the audit's exact rule, re-verified 2026-11-28): a
+      production-cost pair is in scope when its holding schedule claim is one
+      of its compensators, even if a roster-fit gain also compensates. Only a
+      pair compensated by fit alone (schedule absent or refuted) is fit-led
+      and exempt. The gate does not credit a fit gain, so a fit-plus-schedule
+      pair errs toward HOLD; none existed on the audited snapshots (lineups
+      fully covered).
   - **Display:** the page renders only `PermanentDropCheck` facts and
     computes nothing:
     - the short-term gain;
@@ -193,6 +200,20 @@
     season, not the fantasy league's end or playoffs, so the gate is slightly
     stricter than the fantasy schedule late in the season. Replacement level
     assumes the best available player stays available (re-read per request).
+    Persisted schedules keep every game with both teams known, whatever its
+    type (`rebuild_player_schedule` has no game-type filter), so a game that
+    does not count for fantasy, such as the NBA Cup Championship
+    (`0062600001`, 2026-12-11) once its teams are set, would enter window
+    games, window points and remaining games.
+- **Weekly comparisons need every non-injury roster value** (verified
+  2026-11-28, unchanged since Phase 4): the loader fixes one common component
+  mask over the swap roster and every comparable candidate. If any
+  non-injury roster player lacks a weekly `player_value` (for example Yahoo O
+  with no game in 7+ days, kept in an active slot because every IL slot is
+  full), `player_value` leaves the mask and every Rest of Week, Next 7 Days
+  and Next 14 Days pair is CANNOT EVALUATE / INSUFFICIENT EVIDENCE. This
+  fails closed (no wrong advice) but removes all weekly guidance; Rest of
+  Season Outlook still answers from Season Evidence.
 
 - **Phase 8: weekly production season blend** (model
   `waiver-season-blend-phase8`; **deployed** 2026-11-24 10:32 UTC from
@@ -940,6 +961,34 @@
 
 ## Migrations and Operational Safety
 
+- **Terminology (user, 2026-11-28):** Development = the repository and
+  working tree; Test = isolated, disposable test infrastructure; Running app
+  = the Docker-hosted application the user actually uses; Install/deploy =
+  updating the running app to a validated version. This is a private
+  one-user app: no separate enterprise staging/production environment.
+  Prefer "running app" over "production" in current operational wording;
+  historical records keep their original wording.
+- **Validation harness facts (2026-11-28):**
+  - Backend suites in a disposable PostgreSQL on an internal-only Docker
+    network need BOTH `TEST_DATABASE_URL` and `DATABASE_URL` pointing at it:
+    `test_cancelled_board_read_stops_its_query_and_returns_the_pooled_connection`
+    uses the application's own pooled engine, and with the default
+    `localhost:5432` its `while not entered` wait never ends.
+  - `tests/test_browser_observer.py` reads `scripts/yahoo-observer/observer.py`
+    from the repository root; mount it read-only at `/scripts/yahoo-observer`
+    when running inside the API image (`/app`).
+  - Use a fresh disposable database per suite run: a run stopped mid-test
+    skips fixture teardown and leaves rows that break
+    `test_nba_import_is_idempotent_and_preserves_yahoo_identity`.
+  - A frontend build reproduces the running bundle only with
+    `VITE_LIVE_DRAFT_POLL_INTERVAL_MS=60000` (the Dockerfile default);
+    without it the bundle differs by that one constant.
+  - Read-only shadows: restore a private backup into a disposable database
+    with `default_transaction_read_only = on`, pin the clock by replacing
+    `app.features.waivers.service.datetime`, and serve the real FastAPI app
+    through one `TestClient` whose lifespan is a no-op (no schema or
+    migration step). One client keeps one event loop, which the pooled
+    asyncpg engine requires.
 - Draft tables have versioned transactional migrations through
   `0006_observer_connections`, separate from legacy metadata bootstrap.
   Migration up/down/up is tested only on isolated PostgreSQL.
@@ -980,6 +1029,12 @@
     from overlapping and abandoned reads but does not fix the host.
     Keeping the API resident (more RAM, swap off the rotational disk, or a
     no-swap limit for the `api` container) remains the infrastructure fix.
+    Applied 2026-11-28 (host work, not a release): swap moved to an 8 GiB
+    file on a USB 3 SSD with `vm.swappiness` 10, and the `api` service runs
+    without swap (`mem_limit`/`memswap_limit` 1536m, `mem_reservation`
+    512m, plus `system.slice` `MemoryLow`); see the current-state report.
+    PostgreSQL data stays on the rotational disk and 7.3 GB RAM remains the
+    limit, so warm heavy reads still take about 5–9 s.
 - **API-only deployments:**
   - Identify the running image by the container's `ImageManifestDescriptor`
     and `docker image inspect --platform linux/amd64 <tag>`, because recorded

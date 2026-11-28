@@ -1,13 +1,99 @@
-# CURRENT STATE — Phase 9 Permanent-Drop Policy Deployed and Verified — 2026-11-25
+# CURRENT STATE — Phase 9 Running and Re-verified — 2026-11-28
 
-**STATUS: PHASE 9 DEPLOYED AND VERIFIED** (model `waiver-permanent-drop-phase9`;
-accepted 2026-11-25 02:31 UTC). Source commit `8e51670` ("fix: protect
+**STATUS: PHASE 9 RUNNING AND RE-VERIFIED** (model
+`waiver-permanent-drop-phase9`; read-only re-verification 2026-11-28
+17:18–19:02 UTC). The running app already served the committed Phase 9, so
+nothing was rebuilt, installed or recreated, and no migration ran. Evidence
+(local, untracked): `qa-work/2026-11-28-phase9-reverify/`; details in
+`docs/sessions/2026-11-28.md`.
+
+- **Running app (2026-11-28):**
+  - api `ae3a52bf1e8a`. A `docker compose up -d` outside this work recreated
+    it at 16:45:38 UTC from the same Phase 9 image (built 2026-11-24 21:21
+    UTC), which applied the edited Compose memory keys. Migrations are still
+    0001–0006. Its 105 `/app` files equal HEAD.
+  - frontend `684201829a5b` (`db8d307`, since 2026-11-25 01:52 UTC). A HEAD
+    build with the Dockerfile's `VITE_LIVE_DRAFT_POLL_INTERVAL_MS=60000`
+    equals it byte for byte (`index-L4pYP32D.js`, `index-D1ZZHy7H.css`).
+  - db `32ee446dd34c` and caddy `08198174d855` unchanged.
+- **Data:** the user's REFRESH WAIVER DATA at 16:46:04 UTC (job
+  `6d4519f914cf`, every stage SUCCEEDED) is the current snapshot: 29 tables,
+  79,558 rows. Yahoo evidence is fresh until about 16:46 UTC on 2026-11-29.
+- **Host (2026-11-28 infrastructure work, before this re-verification):**
+  swap is an 8 GiB file on a USB 3 SSD (`/mnt/ssd`, `nofail`) with
+  `vm.swappiness` 10; `/swap.img` is off but kept. The `api` service runs
+  without swap: `mem_limit`/`memswap_limit` 1536m and `mem_reservation`
+  512m (with `system.slice` `MemoryLow=512M`). The Compose keys live in the
+  working tree and are **not committed** (backup
+  `docker-compose.yml.bak-20261128T124122Z`). The API held 0 kB of swap, and
+  warm heavy reads took 4.6–9.6 s. Record:
+  `qa-work/2026-11-28-swap-infra/CURRENT_STATE_AND_ROLLBACK.md`.
+- **Validation (Test, disposable, serial):**
+  - Inside the running API image: backend Phase 9 focused 15 and waiver
+    files 342 passed, and the full backend 506 passed on a fresh database.
+    Two earlier attempts are void harness errors (no `DATABASE_URL`, then a
+    database left dirty by stopped runs).
+  - 15 contract probes passed: a fit-led pair is unchecked, and 12
+    ineligible kinds of stronger player never set replacement level.
+  - Frontend unit 82, `tsc -b` and build passed; desktop Playwright (1440 ×
+    1000, one project, one worker) 26 passed.
+- **Read-only acceptance of the running app (GET only):**
+  - 67 GETs through Caddy, all 200 and Phase 9, with 0 invariant violations.
+    They equal a pinned-clock Phase 9 shadow of the same data on all 63 waiver
+    payloads.
+  - Phase 8 and Phase 9 shadows of that data are identical apart from the
+    model stamp, including all 19 Rest of Season Outlook payloads.
+  - Desktop browser: axe 0 in 18 states, keyboard focus returned in all four
+    horizons, the page stayed 1440 wide, no stale-model warning and 22
+    requests, all GET.
+  - The database is identical at 17:55, 18:49 and 19:02 UTC. The API logged
+    97 GETs (all 200, no 499) and no refresh, provider, OAuth or migration
+    line; nginx shows only GETs.
+- **Gate in operation (shadow of the 2026-11-24 backup, running image,
+  clock 22:00 UTC):** the documented acceptance reproduces exactly.
+  - Best moves: Jones Jr. / Huerter +0.076, DeRozan / Dunn +0.231, Jones Jr. /
+    Huerter +0.076 and Larsson / Huerter +0.118 (Rest of Week, Next 7 Days,
+    Next 14 Days and Rest of Season Outlook).
+  - Pair level, Phase 8 against Phase 9 (3,874 pairs per horizon): nets are
+    identical, and decisions changed exactly on the 45 / 62 / 1 / 0 pairs the
+    gate blocks.
+  - 0 violations in 82 payloads, and all 49 lower-cost drops are strictly
+    cheaper.
+- **Today's weekly boards cannot evaluate (fail-closed, pre-existing):**
+  Norman Powell (Yahoo O, no game in 7+ days, last-14-days production stale)
+  holds the SG slot because IL is 3/3 (Curry, Markkanen and Barrett, all O).
+  With no weekly value for him, `player_value` leaves the common mask:
+  - every Rest of Week, Next 7 Days and Next 14 Days pair is CANNOT
+    EVALUATE (7,384 per horizon), so the permanent-drop gate cannot run live
+    today;
+  - Rest of Season Outlook answers (best measured move ADD Keegan Murray /
+    DROP Kevin Huerter, +0.523; dated observation, not advice).
+
+  An in-memory probe that treats Powell like an injury-slot player gives
+  792 / 781 / 733 pairs that clear every gate (PASS included) and 0 / 11 / 55
+  permanence-blocked positive pairs. That is a causality probe, not a
+  method.
+- **Schedule finding (not yet affecting data):** the NBA Cup Championship
+  (`0062600001`, 2026-12-11) is persisted with TBD teams. It does not count
+  for fantasy, but player schedules have no game-type filter, so once its
+  teams are set and a refresh runs, both finalists gain a phantom game in
+  windows covering 2026-12-11.
+- **Backup (private, not committed):**
+  `~/fantasy-gm-phase9-reverify-20261128T175605Z.dump` (`pg_dump -Fc`,
+  138,346,291 bytes, mode 0600, SHA-256 `d0539e42940c…`). 29 TABLE and 29
+  TABLE DATA; restored into a disposable database, it equals the live row
+  counts.
+- **Rollback (unchanged):** `pre-phase9-a11y` (the `8e51670` frontend) or
+  both `pre-phase9` images (Phase 8). No database rollback is needed.
+
+**PHASE 9 DEPLOYMENT RECORD (accepted 2026-11-25 02:31 UTC).** Source commit `8e51670` ("fix: protect
 long-term roster value on short waiver streams") and the accessibility fix
 `db8d307` ("fix: preserve heading order in permanent drop facts"), both
 pushed to `origin/main`.
 
-- **Running:** api `e8ec57d94aae` (since 2026-11-24 21:24 UTC; its image
-  equals the `8e51670` build) and frontend `684201829a5b` (`db8d307`, since
+- **Running at that acceptance:** api `e8ec57d94aae` (since 2026-11-24 21:24 UTC; its image
+  equals the `8e51670` build; replaced by `ae3a52bf1e8a`, same image, on
+  2026-11-28) and frontend `684201829a5b` (`db8d307`, since
   2026-11-25 01:52 UTC). db and caddy were not recreated. No migration.
 - **Acceptance (GET only):**
   - The live payloads equal a read-only Phase 9 shadow of the same data.
